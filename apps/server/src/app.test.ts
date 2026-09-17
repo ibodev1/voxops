@@ -1,11 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getRepositoryStatus, GitHubRepositoryError } from "@voxops/github";
-import { app } from "./app.js";
+import { GitHubRepositoryError, type GitHubRepositoryClient } from "@voxops/github";
+import { createApp } from "./app.js";
 
-vi.mock("@voxops/github", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@voxops/github")>();
-  return { ...actual, getRepositoryStatus: vi.fn() };
-});
+const getRepositoryStatus = vi.fn<GitHubRepositoryClient["getRepositoryStatus"]>();
+const app = createApp({ getRepositoryStatus });
 
 const status = {
   owner: "octocat",
@@ -81,5 +79,28 @@ describe("HTTP API", () => {
 
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({ error: "github_upstream_error" });
+  });
+
+  it("returns authorized private repository status", async () => {
+    getRepositoryStatus.mockResolvedValue({ ...status, private: true });
+    const response = await app.request("/api/repositories/octocat/Hello-World/status");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ...status, private: true });
+  });
+
+  it("maps server-side GitHub authentication failures to a sanitized 503", async () => {
+    const error = new GitHubRepositoryError("authentication");
+    error.message = "secret-token secret-jwt mock-private-key /sensitive/key.pem";
+    getRepositoryStatus.mockRejectedValue(error);
+    const response = await app.request("/api/repositories/octocat/Hello-World/status");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "github_authentication_failed" });
+  });
+
+  it("does not expose unexpected error details", async () => {
+    getRepositoryStatus.mockRejectedValue(new Error("secret-token /sensitive/key.pem"));
+    const response = await app.request("/api/repositories/octocat/Hello-World/status");
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "internal_error" });
   });
 });

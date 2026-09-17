@@ -1,16 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getRepositoryStatus } from "./index.js";
+import type { StrategyOptions } from "@octokit/auth-app";
+import type { Octokit } from "@octokit/rest";
+import { createGitHubRepositoryClient } from "./index.js";
 
 const octokit = vi.hoisted(() => ({
   get: vi.fn(),
   getCommit: vi.fn(),
+  getRepoInstallation: vi.fn(),
+  authenticatedGet: vi.fn(),
+  authenticatedGetCommit: vi.fn(),
+  auth: vi.fn(),
 }));
 
+vi.mock("@octokit/auth-app", () => ({ createAppAuth: () => octokit.auth }));
 vi.mock("@octokit/rest", () => ({
   Octokit: class {
-    rest = { repos: octokit };
+    rest;
+    constructor(options: { auth?: { installationId?: number }; authStrategy?: object }) {
+      this.rest = options.auth?.installationId
+        ? { repos: { get: octokit.authenticatedGet, getCommit: octokit.authenticatedGetCommit } }
+        : options.authStrategy
+          ? { apps: { getRepoInstallation: octokit.getRepoInstallation } }
+          : { repos: octokit };
+    }
   },
 }));
+
+const { getRepositoryStatus } = createGitHubRepositoryClient();
+const appConfig = { appId: "123", privateKey: "mock-private-key" };
 
 const repository = {
   owner: { login: "octocat" },
@@ -37,6 +54,117 @@ beforeEach(() => {
   vi.resetAllMocks();
   octokit.get.mockResolvedValue({ data: repository });
   octokit.getCommit.mockResolvedValue({ data: commit });
+  octokit.getRepoInstallation.mockResolvedValue({ data: { id: 42 } });
+  octokit.authenticatedGet.mockResolvedValue({ data: { ...repository, private: true } });
+  octokit.authenticatedGetCommit.mockResolvedValue({ data: commit });
+  octokit.auth.mockImplementation(
+    async (options: { factory: (config: StrategyOptions) => Octokit }) =>
+      options.factory({ ...appConfig, installationId: 42 }),
+  );
+});
+
+describe("GitHub App repository access", () => {
+  it("hides loss of installation access between metadata and commit requests", async () => {
+    octokit.authenticatedGetCommit.mockRejectedValue(
+      Object.assign(new Error("Not Found"), { status: 404 }),
+    );
+    await expect(
+      createGitHubRepositoryClient(appConfig).getRepositoryStatus({
+        owner: "octocat",
+        repo: "Hello-World",
+      }),
+    ).rejects.toMatchObject({ kind: "not_found" });
+  });
+  it("resolves the repository installation and uses its client for private metadata and commits", async () => {
+    const client = createGitHubRepositoryClient(appConfig);
+    const ref = { owner: "octocat", repo: "Hello-World" };
+    const status = await client.getRepositoryStatus(ref);
+
+    expect(octokit.getRepoInstallation).toHaveBeenCalledWith(ref);
+    expect(octokit.auth).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "installation", installationId: 42 }),
+    );
+    expect(octokit.authenticatedGet).toHaveBeenCalledWith(ref);
+    expect(octokit.authenticatedGetCommit).toHaveBeenCalledWith({ ...ref, ref: "main" });
+    expect(status.private).toBe(true);
+    expect(status.latestCommit.sha).toBe(commit.sha);
+    expect(octokit.get).not.toHaveBeenCalled();
+  });
+
+  it("still reads a public repository when the app is not installed on it", async () => {
+    octokit.getRepoInstallation.mockRejectedValue(
+      Object.assign(new Error("Not Found"), { status: 404 }),
+    );
+    const status = await createGitHubRepositoryClient(appConfig).getRepositoryStatus({
+      owner: "octocat",
+      repo: "Hello-World",
+    });
+    expect(status.private).toBe(false);
+    expect(octokit.auth).not.toHaveBeenCalled();
+  });
+
+  it("does not distinguish a private inaccessible repository from a missing repository", async () => {
+    const missing = Object.assign(new Error("Not Found"), { status: 404 });
+    octokit.getRepoInstallation.mockRejectedValue(missing);
+    octokit.get.mockRejectedValue(missing);
+    await expect(
+      createGitHubRepositoryClient(appConfig).getRepositoryStatus({
+        owner: "octocat",
+        repo: "missing",
+      }),
+    ).rejects.toMatchObject({ kind: "not_found", message: "not_found" });
+  });
+
+  it("hides installation permission failures", async () => {
+    octokit.authenticatedGet.mockRejectedValue(
+      Object.assign(new Error("Resource not accessible by integration"), { status: 403 }),
+    );
+    await expect(
+      createGitHubRepositoryClient(appConfig).getRepositoryStatus({
+        owner: "octocat",
+        repo: "Hello-World",
+      }),
+    ).rejects.toMatchObject({ kind: "not_found" });
+  });
+
+  it.each(["discovery", "installation"])(
+    "sanitizes authentication failure during %s",
+    async (stage) => {
+      const error = Object.assign(new Error("sensitive-token private-key /secret/path"), {
+        status: 401,
+      });
+      if (stage === "discovery") octokit.getRepoInstallation.mockRejectedValue(error);
+      else octokit.authenticatedGet.mockRejectedValue(error);
+      await expect(
+        createGitHubRepositoryClient(appConfig).getRepositoryStatus({
+          owner: "octocat",
+          repo: "Hello-World",
+        }),
+      ).rejects.toMatchObject({ kind: "authentication", message: "authentication" });
+    },
+  );
+
+  it("keeps rate limiting distinct from access denial", async () => {
+    octokit.getRepoInstallation.mockRejectedValue(
+      Object.assign(new Error("API rate limit exceeded"), { status: 403 }),
+    );
+    await expect(
+      createGitHubRepositoryClient(appConfig).getRepositoryStatus({
+        owner: "octocat",
+        repo: "Hello-World",
+      }),
+    ).rejects.toMatchObject({ kind: "rate_limited" });
+  });
+
+  it("validates input before resolving an installation", async () => {
+    await expect(
+      createGitHubRepositoryClient(appConfig).getRepositoryStatus({
+        owner: "bad/owner",
+        repo: "Hello-World",
+      }),
+    ).rejects.toThrow();
+    expect(octokit.getRepoInstallation).not.toHaveBeenCalled();
+  });
 });
 
 describe("getRepositoryStatus", () => {

@@ -23,3 +23,14 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Medium
 - **Workaround:** Replaced the generated `devEngines.packageManager` range with an exact `packageManager` field matching the installed pnpm 11.23.0.
 - **Suggested improvement:** Emit an exact, valid package manager version during initialization.
+
+## 2026-09-17: Octokit authentication factory test types
+
+- **Date:** 2026-09-17
+- **Component/tool:** `@octokit/auth-app` 8.3.1 / TypeScript
+- **Task:** Type a narrow installation-authentication mock
+- **Expected behavior:** Import the factory option type from the package entrypoint.
+- **Actual behavior:** TypeScript reported TS2724: `InstallationAuthOptionsWithFactory` exists in internal declarations but is not publicly exported.
+- **Severity:** Low
+- **Workaround:** Use the exported `StrategyOptions` type for the mock's small factory callback shape.
+- **Suggested improvement:** Export the factory option type or document how consumers should type factory callbacks.
