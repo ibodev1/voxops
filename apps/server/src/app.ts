@@ -1,6 +1,6 @@
 import { createMcpHonoApp } from "@modelcontextprotocol/hono";
 import { createMcpHandler } from "@modelcontextprotocol/server";
-import type { Context, Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { RepositoryListInputSchema, RepositoryRefSchema } from "@voxops/contracts";
 import { GitHubRepositoryError, type GitHubRepositoryClient } from "@voxops/github";
 import { createMcpServer } from "./mcp.js";
@@ -12,8 +12,6 @@ export function createApp(github: GitHubRepositoryClient): Hono {
   app.all("/mcp", (context: Context) =>
     mcp.fetch(context.req.raw, { parsedBody: context.get("parsedBody") }),
   );
-
-  app.get("/health", (context) => context.json({ status: "ok" }));
 
   app.get("/api/repositories/:owner/:repo/status", async (context) => {
     const parsed = RepositoryRefSchema.safeParse(context.req.param());
@@ -59,7 +57,11 @@ export function createApp(github: GitHubRepositoryClient): Hono {
     }
   });
 
-  return app;
+  // Public health must accept API Gateway's Host without relaxing the capability guards.
+  const entry = new Hono();
+  entry.get("/health", (context) => context.json({ status: "ok" }));
+  entry.route("/", app);
+  return entry;
 }
 
 function parseListRequest(context: Context) {

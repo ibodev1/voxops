@@ -56,3 +56,36 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Low
 - **Workaround:** Use a narrowly typed asynchronous `send` mock on the mocked client, retaining the real command class.
 - **Suggested improvement:** Document an overload-safe example for mocking a single AWS SDK v3 command.
+
+## 2026-09-17: pnpm deployment script name collision (developer-reported 5A)
+
+- **Date:** 2026-09-17
+- **Component/tool:** pnpm workspace scripts
+- **Task:** Manually deploy the Milestone 5A stack
+- **Expected behavior:** `pnpm infra:deploy` runs the infra workspace's CDK deploy script.
+- **Actual behavior:** The delegated `pnpm --filter @voxops/infra deploy` was interpreted as pnpm's built-in deploy command rather than the workspace script. The exact error text was not provided.
+- **Severity:** Medium
+- **Workaround:** Explicitly use `pnpm --filter @voxops/infra run deploy`. Preserve the developer's working root script fix.
+- **Suggested improvement:** Use explicit `run` when a workspace script name collides with a pnpm command.
+
+## 2026-09-17: CDK bootstrap role-assumption warning (developer-reported 5A)
+
+- **Date:** 2026-09-17
+- **Component/tool:** AWS CDK bootstrap/deployment roles
+- **Task:** Deploy with the existing authenticated AWS CLI identity
+- **Expected behavior:** CDK assumes the bootstrap lookup/deploy roles.
+- **Actual behavior:** CDK warned it could not assume those roles and continued with same-account credentials. The root cause is unverified.
+- **Severity:** Medium
+- **Workaround:** Deployment completed through CDK's same-account fallback. This is an observed outcome, not the recommended deployment workflow.
+- **Suggested improvement:** Verify identity before deployment, stop when its ARN ends in `:root`, and have an administrator review the temporary-credential deployment identity and bootstrap role trust/permissions. Do not create administrators or root access keys in CDK.
+
+## 2026-09-17: Explicit runtime log group discovery (developer-reported 5A)
+
+- **Date:** 2026-09-17
+- **Component/tool:** CloudWatch Logs / CDK explicit LogGroup
+- **Task:** Tail Lambda runtime logs after manual deployment
+- **Expected behavior:** `aws logs tail /aws/lambda/<function-name>` locates the logs.
+- **Actual behavior:** That command returned `ResourceNotFoundException` because the CDK-created explicit group had another name.
+- **Severity:** Low
+- **Workaround:** `aws logs describe-log-groups` revealed the actual group.
+- **Suggested improvement:** Milestone 5B outputs `RuntimeLogGroupName` and `ApiAccessLogGroupName` and documents output-based discovery without renaming existing resources.

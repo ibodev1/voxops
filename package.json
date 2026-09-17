@@ -8,7 +8,7 @@
     "infra:synth": "pnpm --filter @voxops/infra synth",
     "infra:diff": "pnpm --filter @voxops/infra diff",
     "infra:bootstrap": "pnpm --filter @voxops/infra bootstrap",
-    "infra:deploy": "pnpm --filter @voxops/infra deploy",
+    "infra:deploy": "pnpm --filter @voxops/infra run deploy",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint .",

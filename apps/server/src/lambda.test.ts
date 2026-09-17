@@ -54,12 +54,35 @@ it("returns a sanitized HTTP error through the real Lambda adapter and retries f
   expect(fetch).not.toHaveBeenCalled();
 });
 
-it("keeps the existing localhost Host guard in the Lambda adapter", async () => {
+it("serves public health for an API Gateway v2 request without credential or network access", async () => {
   const { handler } = await import("./lambda.js");
-  const response = await handler({ ...health, headers: { host: "untrusted.example" } });
-  expect(response.statusCode).toBe(403);
+  const domainName = "example.execute-api.eu-central-1.amazonaws.com";
+  const response = await handler({
+    ...health,
+    routeKey: "GET /health",
+    headers: { host: domainName, origin: "https://untrusted.example" },
+    requestContext: { ...health.requestContext, domainName, routeKey: "GET /health" },
+  });
+  expect(response.statusCode).toBe(200);
+  expect(JSON.parse(response.body)).toEqual({ status: "ok" });
   expect(SecretsManagerClient.prototype.send).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
 });
+
+it.each(["/mcp", "/api/repositories/ibodev1/voxops/status"])(
+  "keeps the localhost Host guard for %s in the Lambda adapter",
+  async (path) => {
+    const { handler } = await import("./lambda.js");
+    const response = await handler({
+      ...health,
+      rawPath: path,
+      headers: { host: "example.execute-api.eu-central-1.amazonaws.com" },
+      requestContext: { ...health.requestContext, http: { ...health.requestContext.http, path } },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(SecretsManagerClient.prototype.send).not.toHaveBeenCalled();
+  },
+);
 
 it("keeps MCP discovery credential-free and sanitizes credential failures for all tools", async () => {
   const app = createApp(createConfiguredGitHubClient(process.env, process.cwd()));

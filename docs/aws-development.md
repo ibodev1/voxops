@@ -1,10 +1,12 @@
-# AWS development: Milestone 5A
+# AWS development: Milestones 5A and 5B
 
-The repository now synthesizes a deployable Lambda. No AWS resources were deployed or invoked during this milestone. Deployment and live verification are manual developer steps below. Remote HTTP, remote MCP, and Alexa+ integration remain deferred.
+The developer reports Milestone 5A live and verified in `eu-central-1`: Lambda health, Secrets Manager loading, private repository reads, and runtime logs work. Milestone 5B adds a health-only HTTP API, verified locally by synthesis and tests. Codex did not deploy or invoke AWS during 5B; the developer must deploy and run the remote checks below. Remote MCP and Alexa+ integration remain deferred.
 
 ## Runtime and local checks
 
-`apps/server/src/lambda.ts` uses Hono's official `handle` adapter and the same `createApp` as the loopback server. It accepts API Gateway HTTP API v2 shaped events through authenticated Lambda invocation; there is no gateway or Function URL. The fixtures use a synthetic loopback Host to satisfy the existing MCP adapter guards. Their headers are not authentication: AWS IAM controls who can invoke this function. Do not weaken those guards or add a public transport before designing caller authorization.
+`apps/server/src/lambda.ts` uses Hono's official `handle` adapter and the same `createApp` as the loopback server. One API Gateway HTTP API routes only `GET /health` to the existing Lambda using payload v2. There is no catch-all route or Function URL. `/mcp`, repository REST routes, and other methods/paths are not routed. The `$default` stage is a stage name, not a `$default` route. No CORS or authorizer is configured.
+
+Health responds only with `{"status":"ok"}` and does not load credentials. It is mounted before the localhost guards to accept API Gateway's Host. MCP and repository routes retain those guards locally and during direct invocation. Existing direct-invocation fixtures use a synthetic loopback Host; their headers are not authentication. AWS IAM controls direct Lambda invocation. Do not expose any capability remotely until caller authorization is designed and verified.
 
 The function uses Node.js 24, ARM64, 256 MB, and a 10-second timeout. ARM64 is suitable because the bundled application uses JavaScript and Node built-ins without native application dependencies. CDK `NodejsFunction` runs the root esbuild locally on Windows and Linux; Docker is not needed with dependencies installed. It emits one CommonJS `index.js`, including the pinned AWS SDK, with no source maps, repository copy, PEM, or environment files.
 
@@ -40,18 +42,24 @@ The execution role trusts only Lambda. Its sole identity policy permits `logs:Cr
 
 ## Manual AWS steps (PowerShell, repository root)
 
-These commands contact AWS and may create billable resources. Run them yourself after reviewing the synthesized template. Use your existing authenticated AWS CLI session; do not create access keys. Stop if any command fails.
+These commands contact AWS and may create billable resources. Run them yourself after reviewing the synthesized template. **Do not use the AWS root identity for routine deployments and do not create long-lived root access keys.** Use an administrative IAM Identity Center permission set or an appropriate assumed deployment role with temporary credentials. Account/Identity Center configuration is an operator task outside CDK. See [AWS root-user guidance](https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html). Stop if any command fails.
+
+For the existing 5A environment, run step 1, then step 4 and the smoke checks. Bootstrap and secret setup are already complete; skip steps 2 and 3 unless explicitly setting up a different environment or rotating credentials.
 
 ### 1. Identity and region
 
 ```powershell
-aws sts get-caller-identity
+$voxopsIdentityJson = aws sts get-caller-identity --output json
 if ($LASTEXITCODE -ne 0) { throw 'AWS identity check failed' }
-$env:AWS_REGION = Read-Host 'AWS deployment region'
+$voxopsIdentity = $voxopsIdentityJson | ConvertFrom-Json
+$voxopsIdentity | Format-List Account, Arn
+if ($voxopsIdentity.Arn -match ':root$') {
+  throw 'STOP: root identity must not deploy. Sign in with IAM Identity Center or a temporary-credential deployment role.'
+}
+$env:AWS_REGION = 'eu-central-1'
 $env:AWS_DEFAULT_REGION = $env:AWS_REGION
 $env:CDK_DEFAULT_REGION = $env:AWS_REGION
-$env:CDK_DEFAULT_ACCOUNT = aws sts get-caller-identity --query Account --output text
-if ($LASTEXITCODE -ne 0) { throw 'AWS account lookup failed' }
+$env:CDK_DEFAULT_ACCOUNT = $voxopsIdentity.Account
 ```
 
 ### 2. Bootstrap only if required for this account/region
@@ -61,7 +69,7 @@ pnpm infra:bootstrap
 if ($LASTEXITCODE -ne 0) { throw 'CDK bootstrap failed' }
 ```
 
-Bootstrap creates the separate CDK toolkit stack (including asset storage and deployment roles). Those resources and deployment privileges are separate from the four application resources and the narrow runtime role. Review your account's bootstrap policy before running this command.
+Bootstrap creates the separate CDK toolkit stack (including asset storage and deployment roles). Those resources and deployment privileges are separate from the application resources and narrow runtime role. Review your account's bootstrap policy before running this command. If CDK warns it cannot assume lookup/deploy roles and falls back to same-account credentials, verify the active identity and ask the account administrator to review bootstrap role trust and permissions. The previously observed warning's root cause has not been verified; do not use root to bypass it.
 
 ### 3. Manually create or update the secret outside CDK
 
@@ -109,7 +117,9 @@ pnpm infra:deploy
 if ($LASTEXITCODE -ne 0) { throw 'CDK deployment failed' }
 ```
 
-`infra:diff` runs `cdk diff --no-change-set` for a template comparison without creating a changeset. `infra:deploy` runs `cdk deploy` only. Review the IAM changes in the CLI prompt. The only outputs are function name, function ARN, and secret name.
+`infra:diff` runs `cdk diff --no-change-set` for a template comparison without creating a changeset. `infra:deploy` delegates to `pnpm --filter @voxops/infra run deploy`, which runs `cdk deploy` only; explicit `run` avoids pnpm's built-in deploy command. Review the IAM changes in the CLI prompt. The execution role must remain unchanged. Expect an API Gateway invocation permission restricted to this API's health path and no secret changes. The deploying identity also needs permissions to enable API Gateway log delivery; those control-plane permissions are not added to the runtime role. See [HTTP API logging permissions](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-logging.html).
+
+Outputs are `FunctionName`, `FunctionArn`, `GitHubAppSecretName`, `ApiEndpoint`, `RuntimeLogGroupName`, and `ApiAccessLogGroupName`. None contains secret values.
 
 ### 5. Invoke the fixtures
 
@@ -134,9 +144,55 @@ try {
 
 Inspect both the AWS invocation result (no `FunctionError`) and the returned payload's `statusCode`. Health should be `200` with body `{"status":"ok"}`, even with a missing secret. Repository status should be `200` with repository metadata when the App installation has access. Invalid/missing credentials produce a sanitized `503`; inaccessible repositories produce `404`. An AWS invocation `StatusCode: 200` alone does not mean the application succeeded.
 
+### 6. Remote positive and negative smoke checks
+
+After deploying 5B, retrieve the endpoint and check health without any credentials:
+
+```powershell
+$voxopsApiEndpoint = aws cloudformation describe-stacks --stack-name VoxOpsDevStack --region $env:AWS_REGION --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue | [0]" --output text
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($voxopsApiEndpoint) -or $voxopsApiEndpoint -eq 'None') { throw 'Cannot read API endpoint; verify 5B deployment' }
+$voxopsApiEndpoint = $voxopsApiEndpoint.TrimEnd('/')
+curl.exe --silent --show-error --include "$voxopsApiEndpoint/health"
+```
+
+Expect HTTP **200** and exactly `{"status":"ok"}`. This checks the Lambda integration with a real API Gateway Host. No configuration, environment data, internal errors, or secret identifiers belong in the response.
+
+```powershell
+curl.exe --silent --show-error --include "$voxopsApiEndpoint/mcp"
+curl.exe --silent --show-error --include --request POST "$voxopsApiEndpoint/mcp"
+curl.exe --silent --show-error --include "$voxopsApiEndpoint/api/repositories/ibodev1/voxops/status"
+curl.exe --silent --show-error --include "$voxopsApiEndpoint/api/repositories/ibodev1/voxops/issues"
+curl.exe --silent --show-error --include "$voxopsApiEndpoint/api/repositories/ibodev1/voxops/pull-requests"
+curl.exe --silent --show-error --include "$voxopsApiEndpoint/api/repositories/ibodev1/voxops/workflow-runs"
+curl.exe --silent --show-error --include --request POST "$voxopsApiEndpoint/health"
+curl.exe --silent --show-error --include "$voxopsApiEndpoint/unmatched"
+```
+
+Every negative check must return API Gateway **404** / route-not-found behavior (normally `{"message":"Not Found"}`), not a successful Hono/MCP/repository response. A Hono `403` also warrants investigation: those requests should not reach Lambda at all. Do not add routes to make negative checks succeed. The template tests enforce exactly one route; do not replace it with `$default`, `ANY`, or a greedy path.
+
+### 7. Discover actual log groups
+
+The runtime uses an explicit CDK log group. Do not assume `/aws/lambda/<function-name>`:
+
+```powershell
+$voxopsRuntimeLogGroup = aws cloudformation describe-stacks --stack-name VoxOpsDevStack --region $env:AWS_REGION --query "Stacks[0].Outputs[?OutputKey=='RuntimeLogGroupName'].OutputValue | [0]" --output text
+if ($LASTEXITCODE -ne 0) { throw 'Cannot read runtime log group output' }
+aws logs tail $voxopsRuntimeLogGroup --since 10m --region $env:AWS_REGION
+
+$voxopsAccessLogGroup = aws cloudformation describe-stacks --stack-name VoxOpsDevStack --region $env:AWS_REGION --query "Stacks[0].Outputs[?OutputKey=='ApiAccessLogGroupName'].OutputValue | [0]" --output text
+if ($LASTEXITCODE -ne 0) { throw 'Cannot read access log group output' }
+aws logs tail $voxopsAccessLogGroup --since 10m --region $env:AWS_REGION
+```
+
+The fallback before the new outputs are deployed is `aws logs describe-log-groups --region eu-central-1`. Allow a short delivery delay after smoke checks. Inspect access logs for the health response and confirm no forbidden request reaches the runtime.
+
 ## Cost and lifecycle
 
-The application stack creates one Lambda, one CloudWatch log group (seven-day retention), one IAM role, and one inline policy. There is no VPC, NAT, provisioned/reserved concurrency, tracing, or always-on server. Lambda invocations, logs, the separately managed Secrets Manager secret, and CDK bootstrap asset storage can incur charges. No live cost/performance measurement has been made; cold starts and GitHub/Secrets Manager latency may approach the 10-second timeout. Logs are deleted with the development stack; the imported secret and separate bootstrap stack remain until separately removed. Restrict invocation permissions because every authorized invoker can read repositories accessible to the GitHub App.
+The application stack contains ten resources: the existing Lambda, runtime log group, IAM role and inline policy, plus one HTTP API, one route, one integration, one stage, one invocation permission, and one access log group. Both log groups retain events for seven days and are deleted with the development stack. There is no VPC, NAT, provisioned/reserved concurrency, tracing, or always-on server.
+
+Stage throttling is 10 requests/second with a burst of 20; [API Gateway throttling is best effort](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-throttling.html), not a hard spending cap. Public traffic can incur gateway, Lambda, and logging charges. Secrets Manager and bootstrap storage also have costs. Detailed stage metrics are disabled. Access logs include only request ID, method, route key, status, and response/integration latency; no headers, bodies, query strings, raw paths, tokens, or MCP payloads. An unmatched request may have no integration latency. Review logs after deployment to confirm delivery.
+
+The imported secret and separate bootstrap stack remain until separately removed. Restrict direct invocation permissions because authorized direct invokers can still read repositories accessible to the GitHub App. Live 5B behavior and costs remain unverified until the developer runs the checks.
 
 ## References
 

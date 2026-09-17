@@ -15,18 +15,132 @@ const template = Template.fromStack(stack);
 app.synth();
 afterAll(() => rmSync(outdir, { recursive: true, force: true }));
 
-it("synthesizes only the function, logs, and scoped execution IAM", () => {
+it("synthesizes only the runtime and the health HTTP boundary", () => {
   template.resourceCountIs("AWS::Lambda::Function", 1);
-  template.resourceCountIs("AWS::Logs::LogGroup", 1);
+  template.resourceCountIs("AWS::Logs::LogGroup", 2);
   template.resourceCountIs("AWS::IAM::Role", 1);
   template.resourceCountIs("AWS::IAM::Policy", 1);
-  // A resource allowlist also catches gateways, URLs, permissions, VPCs, and custom resources.
+  // This exact resource allowlist excludes Function URLs, REST APIs, auth systems,
+  // VPC/NAT/compute resources, extra Lambdas, and custom resources.
   const resources = template.toJSON().Resources as Record<string, { Type: string }>;
   expect(
     Object.values(resources)
       .map((resource) => resource.Type)
       .sort(),
-  ).toEqual(["AWS::IAM::Policy", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup"]);
+  ).toEqual([
+    "AWS::ApiGatewayV2::Api",
+    "AWS::ApiGatewayV2::Integration",
+    "AWS::ApiGatewayV2::Route",
+    "AWS::ApiGatewayV2::Stage",
+    "AWS::IAM::Policy",
+    "AWS::IAM::Role",
+    "AWS::Lambda::Function",
+    "AWS::Lambda::Permission",
+    "AWS::Logs::LogGroup",
+    "AWS::Logs::LogGroup",
+  ]);
+});
+
+it("routes only GET /health through one HTTP API to the existing Lambda", () => {
+  const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
+  const integration = Object.keys(template.findResources("AWS::ApiGatewayV2::Integration"))[0];
+  const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
+  template.resourceCountIs("AWS::ApiGatewayV2::Api", 1);
+  template.resourceCountIs("AWS::ApiGatewayV2::Route", 1);
+  template.resourceCountIs("AWS::ApiGatewayV2::Integration", 1);
+  template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
+    ProtocolType: "HTTP",
+    CorsConfiguration: Match.absent(),
+    // No quick-create/default route or external OpenAPI routes.
+    Target: Match.absent(),
+    RouteKey: Match.absent(),
+    Body: Match.absent(),
+    BodyS3Location: Match.absent(),
+  });
+  template.hasResourceProperties(
+    "AWS::ApiGatewayV2::Route",
+    Match.objectEquals({
+      ApiId: { Ref: api },
+      RouteKey: "GET /health",
+      AuthorizationType: "NONE",
+      Target: { "Fn::Join": ["", ["integrations/", { Ref: integration }]] },
+    }),
+  );
+  template.hasResourceProperties(
+    "AWS::ApiGatewayV2::Integration",
+    Match.objectEquals({
+      ApiId: { Ref: api },
+      IntegrationType: "AWS_PROXY",
+      IntegrationUri: { "Fn::GetAtt": [runtime, "Arn"] },
+      PayloadFormatVersion: "2.0",
+    }),
+  );
+  // Exact route count/key forbids /mcp, repository routes, ANY and $default catch-alls.
+});
+
+it("limits the new invocation grant to this API's health path", () => {
+  const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
+  const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
+  template.resourceCountIs("AWS::Lambda::Permission", 1);
+  template.hasResourceProperties(
+    "AWS::Lambda::Permission",
+    Match.objectEquals({
+      Action: "lambda:InvokeFunction",
+      FunctionName: { "Fn::GetAtt": [runtime, "Arn"] },
+      Principal: "apigateway.amazonaws.com",
+      SourceArn: {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            { Ref: "AWS::Partition" },
+            ":execute-api:",
+            { Ref: "AWS::Region" },
+            ":",
+            { Ref: "AWS::AccountId" },
+            ":",
+            { Ref: api },
+            "/*/*/health",
+          ],
+        ],
+      },
+    }),
+  );
+});
+
+it("uses a throttled default stage and only minimal structured access logs", () => {
+  const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
+  const logs = template.toJSON().Outputs.ApiAccessLogGroupName.Value.Ref as string;
+  template.resourceCountIs("AWS::ApiGatewayV2::Stage", 1);
+  template.hasResourceProperties(
+    "AWS::ApiGatewayV2::Stage",
+    Match.objectEquals({
+      ApiId: { Ref: api },
+      StageName: "$default",
+      AutoDeploy: true,
+      DefaultRouteSettings: {
+        ThrottlingRateLimit: 10,
+        ThrottlingBurstLimit: 20,
+        DetailedMetricsEnabled: false,
+      },
+      AccessLogSettings: {
+        DestinationArn: { "Fn::GetAtt": [logs, "Arn"] },
+        Format: JSON.stringify({
+          requestId: "$context.requestId",
+          method: "$context.httpMethod",
+          routeKey: "$context.routeKey",
+          status: "$context.status",
+          responseLatency: "$context.responseLatency",
+          integrationLatency: "$context.integrationLatency",
+        }),
+      },
+    }),
+  );
+  // The exact format excludes Authorization, bodies, paths, query strings and payloads.
+  for (const log of Object.values(template.findResources("AWS::Logs::LogGroup"))) {
+    expect(log.Properties.RetentionInDays).toBe(7);
+    expect(log.DeletionPolicy).toBe("Delete");
+  }
 });
 
 it("uses bounded runtime cost and environment settings", () => {
@@ -52,7 +166,7 @@ it("uses bounded runtime cost and environment settings", () => {
 });
 
 it("allows only log writes and reading exactly the named secret", () => {
-  const logs = Object.keys(template.findResources("AWS::Logs::LogGroup"))[0];
+  const logs = template.toJSON().Outputs.RuntimeLogGroupName.Value.Ref as string;
   const role = Object.keys(template.findResources("AWS::IAM::Role"))[0];
   template.hasResourceProperties("AWS::IAM::Role", {
     ManagedPolicyArns: Match.absent(),
@@ -107,10 +221,20 @@ it("allows only log writes and reading exactly the named secret", () => {
 
 it("outputs identifiers only and packages only the bundled handler", () => {
   expect(Object.keys(template.toJSON().Outputs).sort()).toEqual([
+    "ApiAccessLogGroupName",
+    "ApiEndpoint",
     "FunctionArn",
     "FunctionName",
     "GitHubAppSecretName",
+    "RuntimeLogGroupName",
   ]);
+  const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
+  const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
+  template.hasOutput("ApiEndpoint", { Value: { "Fn::GetAtt": [api, "ApiEndpoint"] } });
+  template.hasResourceProperties("AWS::Lambda::Function", {
+    LoggingConfig: { LogGroup: template.toJSON().Outputs.RuntimeLogGroupName.Value },
+  });
+  template.hasOutput("FunctionArn", { Value: { "Fn::GetAtt": [runtime, "Arn"] } });
   const assets = readdirSync(outdir, { withFileTypes: true }).filter(
     (entry) => entry.isDirectory() && entry.name.startsWith("asset."),
   );
@@ -147,9 +271,14 @@ it("executes the actual CommonJS bundle with the health fixture and networking d
     globalThis.fetch = deny;
     const { handler } = require(process.argv[1]);
     const event = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
-    handler(event).then(result => {
-      require('node:assert/strict').equal(result.statusCode, 200);
-      require('node:assert/strict').deepEqual(JSON.parse(result.body), { status: 'ok' });
+    const domainName = 'example.execute-api.eu-central-1.amazonaws.com';
+    const remote = { ...event, routeKey: 'GET /health', headers: { host: domainName },
+      requestContext: { ...event.requestContext, domainName, routeKey: 'GET /health' } };
+    Promise.all([handler(event), handler(remote)]).then(results => {
+      for (const result of results) {
+        require('node:assert/strict').equal(result.statusCode, 200);
+        require('node:assert/strict').deepEqual(JSON.parse(result.body), { status: 'ok' });
+      }
       console.log('health passed');
     }).catch(() => process.exitCode = 1);
   `,
