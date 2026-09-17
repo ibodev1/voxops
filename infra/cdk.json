@@ -1,0 +1,6 @@
+{
+  "app": "pnpm exec tsx bin/voxops.ts",
+  "output": "cdk.out",
+  "versionReporting": false,
+  "analyticsReporting": false
+}

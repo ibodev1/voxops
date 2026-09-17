@@ -48,7 +48,7 @@ Archived: no
 
 To verify a running local server with a real MCP client, run `pnpm mcp:smoke` in another terminal. The command checks initialization, tool listing, and live calls to all four tools. It uses `ibodev1/voxops` when both GitHub App environment variables are set, or a public repository otherwise. Set `PORT` in both terminals if using a port other than 3000.
 
-Current capabilities are read-only public/private repository status, open issue and pull request listings, recent workflow run listings, and GitHub App authentication. Alexa+, issue creation or editing, pull request editing, workflow reruns, AI analysis, write actions, and AWS deployment are not implemented.
+Current capabilities are read-only public/private repository status, open issue and pull request listings, recent workflow run listings, and GitHub App authentication. Milestone 5A adds a Lambda entrypoint, offline CDK synthesis, and lazy Secrets Manager credential loading. AWS deployment and live verification remain manual. Alexa+, remote HTTP/MCP access, issue creation or editing, pull request editing, workflow reruns, AI analysis, and write actions are not implemented.
 
 With neither GitHub App setting configured, public repository access and `/health` work without credentials. With an App configured, VoxOps resolves the installation for each repository. If no installation is visible, it tries anonymous access so public repositories still work. Inaccessible private repositories and missing repositories both return 404. Invalid references return 400, GitHub rate limits or authentication failures return 503, and other upstream failures return 502. Authentication failures are server configuration problems, not HTTP client login challenges.
 
@@ -75,7 +75,7 @@ curl.exe http://127.0.0.1:3000/health
 curl.exe http://127.0.0.1:3000/api/repositories/ibodev1/voxops/status
 ```
 
-No PAT, client secret, or manually supplied installation token is used. Octokit creates short-lived installation tokens and manages their cache in memory; tokens are never persisted. Write permissions are not enabled. Partial configuration, unreadable paths, keys inside the repository (including symlinks), and invalid RSA PEM files cause a sanitized startup error.
+No PAT, client secret, or manually supplied installation token is used. Octokit creates short-lived installation tokens and manages their cache in memory; tokens are never persisted. Write permissions are not enabled. Credentials load on the first GitHub capability request. Partial configuration, unreadable paths, keys inside the repository (including symlinks), and invalid RSA PEM files cause a sanitized capability error; `/health` remains available. In local mode, leave `VOXOPS_GITHUB_SECRET_ID` empty.
 
 The HTTP API trusts the local caller and binds only to `127.0.0.1`. GitHub App authentication authorizes the server's GitHub access; it does not authenticate HTTP callers. Anyone able to call this local server can read repositories granted to the App. Do not expose it through a tunnel or network listener without adding caller authorization.
 
@@ -86,10 +86,15 @@ pnpm format:check
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm infra:synth
 ```
 
 Run `pnpm format` to apply formatting. Lefthook checks formatting and linting before commits; CI also runs type checking and tests.
 
 ## Repository layout
 
-`apps/server` holds the HTTP app; `packages/contracts` holds validated request and response shapes; `packages/github` contains the Octokit integration. Future workspaces and infrastructure will be added when needed. Decisions and real development friction belong in `docs/`.
+`apps/server` holds the shared HTTP app and local/Lambda entrypoints; `packages/contracts` holds validated request and response shapes; `packages/github` contains the Octokit integration; `infra` holds the single CDK development stack. Decisions and real development friction belong in `docs/`.
+
+## AWS development
+
+See [AWS development instructions](docs/aws-development.md) for exact PowerShell commands to verify identity, bootstrap if needed, upload the external PEM through a temporary JSON file, review, deploy, and invoke the supplied fixtures. `pnpm infra:synth` is offline; `infra:diff`, `infra:bootstrap`, and `infra:deploy` are explicit manual AWS commands. The stack has one Lambda, seven-day logs, and scoped IAM. It references an existing secret and creates no public endpoint. No AWS deployment or remote Alexa support is claimed.

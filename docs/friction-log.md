@@ -45,3 +45,14 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Low
 - **Workaround:** Send an explicit localhost `Host` header in tests and use the adapter's documented `Context` annotation.
 - **Suggested improvement:** Show the required `Host` header in the adapter's in-process testing example.
+
+## 2026-09-17: AWS SDK send overloads in tests
+
+- **Date:** 2026-09-17
+- **Component/tool:** AWS SDK v3 / Vitest / TypeScript
+- **Task:** Mock the Secrets Manager credential loader without AWS access
+- **Expected behavior:** A spy on `SecretsManagerClient.send` accepts a `SecretString` response.
+- **Actual behavior:** TypeScript selected the callback overload and inferred a `void` return, rejecting `mockResolvedValue` responses even though the runtime test passed.
+- **Severity:** Low
+- **Workaround:** Use a narrowly typed asynchronous `send` mock on the mocked client, retaining the real command class.
+- **Suggested improvement:** Document an overload-safe example for mocking a single AWS SDK v3 command.

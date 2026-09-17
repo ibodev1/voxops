@@ -1,0 +1,28 @@
+{
+  "version": "2.0",
+  "routeKey": "$default",
+  "rawPath": "/api/repositories/ibodev1/voxops/status",
+  "rawQueryString": "",
+  "headers": { "host": "127.0.0.1", "accept": "application/json" },
+  "requestContext": {
+    "accountId": "000000000000",
+    "apiId": "manual-invocation",
+    "authentication": null,
+    "authorizer": {},
+    "domainName": "127.0.0.1",
+    "domainPrefix": "manual",
+    "http": {
+      "method": "GET",
+      "path": "/api/repositories/ibodev1/voxops/status",
+      "protocol": "HTTP/1.1",
+      "sourceIp": "127.0.0.1",
+      "userAgent": "voxops-manual-smoke"
+    },
+    "requestId": "manual-repository-status",
+    "routeKey": "$default",
+    "stage": "$default",
+    "time": "17/Sep/2026:00:00:00 +0000",
+    "timeEpoch": 1789603200000
+  },
+  "isBase64Encoded": false
+}

@@ -5,3 +5,6 @@ packages:
 allowBuilds:
   esbuild: true
   lefthook: true
+minimumReleaseAgeExclude:
+  - "@aws-sdk/client-secrets-manager@3.1134.0"
+  - aws-cdk@2.1142.0

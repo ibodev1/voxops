@@ -16,5 +16,12 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["vitest.config.ts", "apps/**/*.ts", "packages/**/*.ts", "scripts/**/*.ts"]
+  "include": [
+    "vitest.config.ts",
+    "apps/**/*.ts",
+    "packages/**/*.ts",
+    "scripts/**/*.ts",
+    "infra/**/*.ts"
+  ],
+  "exclude": ["node_modules", "infra/cdk.out"]
 }
