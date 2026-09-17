@@ -67,7 +67,9 @@ it("uses App authentication for discovery, installation authentication for reads
 
   const app = createApp(createGitHubRepositoryClient({ appId: "123", privateKey }));
   for (let attempt = 0; attempt < 2; attempt++) {
-    const response = await app.request("/api/repositories/example/private/status");
+    const response = await app.request("/api/repositories/example/private/status", {
+      headers: { host: "127.0.0.1" },
+    });
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(JSON.parse(body)).toMatchObject({ fullName: "example/private", private: true });

@@ -1,6 +1,6 @@
 # VoxOps
 
-VoxOps is an early hackathon project for a voice-first developer operations agent for Alexa+. Its current Milestone 2 capability is a local, read-only HTTP API that returns repository metadata and the latest default-branch commit. Public repositories work anonymously; a configured GitHub App enables access to private repositories available to its installation.
+VoxOps is an early hackathon project for a voice-first developer operations agent for Alexa+. Its current capability is local, read-only repository status over REST and MCP Streamable HTTP. Public repositories work anonymously; a configured GitHub App enables access to private repositories available to its installation.
 
 ## Requirements
 
@@ -20,6 +20,23 @@ The server listens on `http://127.0.0.1:3000` by default. Set `PORT` to use a di
 curl http://127.0.0.1:3000/health
 curl http://127.0.0.1:3000/api/repositories/modelcontextprotocol/typescript-sdk/status
 ```
+
+## MCP endpoint
+
+Connect a Streamable HTTP MCP client to `http://127.0.0.1:3000/mcp`. The `voxops` server exposes one read-only tool, `get_repository_status`, with `owner` and `repo` inputs. It returns repository metadata, the default branch, the latest commit, and repository state as both concise text and structured data. For example:
+
+```text
+Repository example/repo
+Default branch: main
+Latest commit: abc1234 — Update README
+Last pushed: 2026-09-17T00:00:00Z
+Private: no
+Archived: no
+```
+
+To verify a running local server with a real MCP client, run `pnpm mcp:smoke` in another terminal. The command checks initialization, tool listing, and a live tool call. It uses `ibodev1/voxops` when both GitHub App environment variables are set, or a public repository otherwise. Set `PORT` in both terminals if using a port other than 3000.
+
+Current capabilities are public/private repository status, GitHub App authentication, and this MCP read-only tool. Alexa+, issue management, pull requests, GitHub Actions, write actions, and AWS deployment are not implemented.
 
 With neither GitHub App setting configured, public repository access and `/health` work without credentials. With an App configured, VoxOps resolves the installation for each repository. If no installation is visible, it tries anonymous access so public repositories still work. Inaccessible private repositories and missing repositories both return 404. Invalid references return 400, GitHub rate limits or authentication failures return 503, and other upstream failures return 502. Authentication failures are server configuration problems, not HTTP client login challenges.
 

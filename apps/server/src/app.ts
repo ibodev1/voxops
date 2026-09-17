@@ -1,9 +1,17 @@
-import { Hono } from "hono";
+import { createMcpHonoApp } from "@modelcontextprotocol/hono";
+import { createMcpHandler } from "@modelcontextprotocol/server";
+import type { Context, Hono } from "hono";
 import { RepositoryRefSchema } from "@voxops/contracts";
 import { GitHubRepositoryError, type GitHubRepositoryClient } from "@voxops/github";
+import { createMcpServer } from "./mcp.js";
 
 export function createApp(github: GitHubRepositoryClient): Hono {
-  const app = new Hono();
+  const app = createMcpHonoApp();
+  const mcp = createMcpHandler(() => createMcpServer(github));
+
+  app.all("/mcp", (context: Context) =>
+    mcp.fetch(context.req.raw, { parsedBody: context.get("parsedBody") }),
+  );
 
   app.get("/health", (context) => context.json({ status: "ok" }));
 

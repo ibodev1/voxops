@@ -34,3 +34,14 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Low
 - **Workaround:** Use the exported `StrategyOptions` type for the mock's small factory callback shape.
 - **Suggested improvement:** Export the factory option type or document how consumers should type factory callbacks.
+
+## 2026-09-17: Hono MCP adapter in-process tests
+
+- **Date:** 2026-09-17
+- **Component/tool:** `@modelcontextprotocol/hono` 2.0.0 / Hono test helper
+- **Task:** Drive the existing REST and new MCP routes in-process with localhost protection enabled
+- **Expected behavior:** In-process requests behave like requests to the loopback listener.
+- **Actual behavior:** Hono's test helper supplied no `Host` header, so the adapter correctly rejected every request with 403; inferred Hono context also typed `parsedBody` as `never`.
+- **Severity:** Low
+- **Workaround:** Send an explicit localhost `Host` header in tests and use the adapter's documented `Context` annotation.
+- **Suggested improvement:** Show the required `Host` header in the adapter's in-process testing example.
