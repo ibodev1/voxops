@@ -3,4 +3,5 @@ packages:
   - packages/*
   - infra
 allowBuilds:
+  esbuild: true
   lefthook: true

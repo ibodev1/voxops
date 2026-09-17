@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev:server": "tsx watch apps/server/src/index.ts",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint .",
@@ -11,9 +12,11 @@
     "prepare": "lefthook install"
   },
   "devDependencies": {
+    "@types/node": "24.13.5",
     "lefthook": "2.1.14",
     "oxfmt": "0.68.0",
     "oxlint": "1.83.0",
+    "tsx": "4.23.13",
     "typescript": "7.0.2",
     "vitest": "5.0.1"
   },

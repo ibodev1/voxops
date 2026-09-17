@@ -1,0 +1,11 @@
+{
+  "name": "@voxops/server",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@hono/node-server": "2.1.1",
+    "@voxops/contracts": "workspace:*",
+    "@voxops/github": "workspace:*",
+    "hono": "4.13.8"
+  }
+}

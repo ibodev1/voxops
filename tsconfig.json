@@ -13,7 +13,8 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "skipLibCheck": true,
+    "types": ["node"],
     "noEmit": true
   },
-  "include": ["vitest.config.ts"]
+  "include": ["vitest.config.ts", "apps/**/*.ts", "packages/**/*.ts"]
 }
