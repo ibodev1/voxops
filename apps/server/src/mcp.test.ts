@@ -2,10 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { GitHubRepositoryError, type GitHubRepositoryClient } from "@voxops/github";
 import { createApp } from "./app.js";
-import { formatRepositoryStatus } from "./mcp.js";
+import {
+  formatRepositoryStatus,
+  formatOpenIssues,
+  formatPullRequests,
+  formatWorkflowRuns,
+} from "./mcp.js";
 
 const getRepositoryStatus = vi.fn<GitHubRepositoryClient["getRepositoryStatus"]>();
-const app = createApp({ getRepositoryStatus });
+const listOpenIssues = vi.fn<GitHubRepositoryClient["listOpenIssues"]>();
+const listPullRequests = vi.fn<GitHubRepositoryClient["listPullRequests"]>();
+const listWorkflowRuns = vi.fn<GitHubRepositoryClient["listWorkflowRuns"]>();
+const app = createApp({ getRepositoryStatus, listOpenIssues, listPullRequests, listWorkflowRuns });
 const status = {
   owner: "example",
   name: "private",
@@ -23,12 +31,63 @@ const status = {
     committedAt: "2026-09-17T00:00:00Z",
   },
 };
+const issues = {
+  repository: "example/private",
+  issues: [
+    {
+      number: 12,
+      title: "Fix CI",
+      state: "open" as const,
+      url: "https://github.com/example/private/issues/12",
+      authorLogin: "author",
+      labels: ["bug"],
+      createdAt: "2026-09-17T00:00:00Z",
+      updatedAt: "2026-09-17T01:00:00Z",
+    },
+  ],
+};
+const pullRequests = {
+  repository: "example/private",
+  pullRequests: [
+    {
+      number: 7,
+      title: "Improve tests",
+      url: "https://github.com/example/private/pull/7",
+      authorLogin: "author",
+      draft: true,
+      sourceBranch: "tests",
+      targetBranch: "main",
+      createdAt: "2026-09-17T00:00:00Z",
+      updatedAt: "2026-09-17T01:00:00Z",
+    },
+  ],
+};
+const workflowRuns = {
+  repository: "example/private",
+  workflowRuns: [
+    {
+      id: 42,
+      workflowName: "CI",
+      event: "push",
+      status: "completed",
+      conclusion: "success",
+      branch: "main",
+      commitSha: "a".repeat(40),
+      url: "https://github.com/example/private/actions/runs/42",
+      createdAt: "2026-09-17T00:00:00Z",
+      updatedAt: "2026-09-17T01:00:00Z",
+    },
+  ],
+};
 
 let client: Client;
 
 beforeEach(async () => {
   vi.resetAllMocks();
   getRepositoryStatus.mockResolvedValue(status);
+  listOpenIssues.mockResolvedValue(issues);
+  listPullRequests.mockResolvedValue(pullRequests);
+  listWorkflowRuns.mockResolvedValue(workflowRuns);
   client = new Client(
     { name: "voxops-test", version: "0.1.0" },
     { versionNegotiation: { mode: "auto" } },
@@ -46,14 +105,16 @@ beforeEach(async () => {
 afterEach(async () => client.close());
 
 describe("MCP Streamable HTTP endpoint", () => {
-  it("connects and lists exactly one read-only repository tool", async () => {
+  it("connects and lists the four read-only repository tools", async () => {
     expect(client.getServerVersion()).toMatchObject({ name: "voxops", version: "0.1.0" });
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(1);
-    expect(tools[0]).toMatchObject({
-      name: "get_repository_status",
-      annotations: { readOnlyHint: true, destructiveHint: false },
-    });
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "get_repository_status",
+      "list_open_issues",
+      "list_pull_requests",
+      "list_workflow_runs",
+    ]);
+    expect(tools.every((tool) => tool.annotations?.readOnlyHint)).toBe(true);
   });
 
   it("returns private repository status as text and structured content", async () => {
@@ -66,6 +127,58 @@ describe("MCP Streamable HTTP endpoint", () => {
     expect(result.content).toEqual([{ type: "text", text: formatRepositoryStatus(status) }]);
     expect(getRepositoryStatus).toHaveBeenCalledWith({ owner: "example", repo: "private" });
   });
+
+  it.each([
+    ["list_open_issues", issues, formatOpenIssues(issues)],
+    ["list_pull_requests", pullRequests, formatPullRequests(pullRequests)],
+    ["list_workflow_runs", workflowRuns, formatWorkflowRuns(workflowRuns)],
+  ] as const)(
+    "calls %s through MCP with structured and readable output",
+    async (name, output, text) => {
+      const result = await client.callTool({
+        name,
+        arguments: { owner: "example", repo: "private", limit: 3 },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toEqual(output);
+      expect(result.content).toEqual([{ type: "text", text }]);
+    },
+  );
+
+  it.each(["list_open_issues", "list_pull_requests", "list_workflow_runs"])(
+    "rejects invalid %s input before GitHub",
+    async (name) => {
+      for (const args of [
+        { owner: "bad/owner", repo: "private", limit: 10 },
+        { owner: "example", repo: "private", limit: 0 },
+        { owner: "example", repo: "private", limit: 26 },
+      ]) {
+        const result = await client.callTool({ name, arguments: args });
+        expect(result.isError).toBe(true);
+      }
+      expect(listOpenIssues).not.toHaveBeenCalled();
+      expect(listPullRequests).not.toHaveBeenCalled();
+      expect(listWorkflowRuns).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["list_open_issues", "list_pull_requests", "list_workflow_runs"])(
+    "sanitizes %s GitHub failures",
+    async (name) => {
+      const error = new GitHubRepositoryError("authentication");
+      error.message = "secret-token /private/key.pem";
+      listOpenIssues.mockRejectedValue(error);
+      listPullRequests.mockRejectedValue(error);
+      listWorkflowRuns.mockRejectedValue(error);
+      const result = await client.callTool({
+        name,
+        arguments: { owner: "example", repo: "private" },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: "GitHub App authentication failed." }]);
+      expect(JSON.stringify(result)).not.toMatch(/secret-token|key\.pem/);
+    },
+  );
 
   it("also serves a 2025-era Streamable HTTP client", async () => {
     const legacy = new Client({ name: "legacy-test", version: "0.1.0" });
@@ -81,6 +194,9 @@ describe("MCP Streamable HTTP endpoint", () => {
       expect(legacy.getDiscoverResult()).toBeUndefined();
       expect((await legacy.listTools()).tools.map((tool) => tool.name)).toEqual([
         "get_repository_status",
+        "list_open_issues",
+        "list_pull_requests",
+        "list_workflow_runs",
       ]);
       const result = await legacy.callTool({
         name: "get_repository_status",
@@ -151,5 +267,17 @@ it("formats nullable dates and multiline commit messages deterministically", () 
       "Private: yes",
       "Archived: yes",
     ].join("\n"),
+  );
+});
+
+it("formats empty developer context lists clearly", () => {
+  expect(formatOpenIssues({ ...issues, issues: [] })).toBe(
+    "No open issues found for example/private.",
+  );
+  expect(formatPullRequests({ ...pullRequests, pullRequests: [] })).toBe(
+    "No open pull requests found for example/private.",
+  );
+  expect(formatWorkflowRuns({ ...workflowRuns, workflowRuns: [] })).toBe(
+    "No recent workflow runs found for example/private.",
   );
 });

@@ -9,6 +9,12 @@ const octokit = vi.hoisted(() => ({
   getRepoInstallation: vi.fn(),
   authenticatedGet: vi.fn(),
   authenticatedGetCommit: vi.fn(),
+  listIssues: vi.fn(),
+  listPulls: vi.fn(),
+  listRuns: vi.fn(),
+  authenticatedListIssues: vi.fn(),
+  authenticatedListPulls: vi.fn(),
+  authenticatedListRuns: vi.fn(),
   auth: vi.fn(),
 }));
 
@@ -18,10 +24,20 @@ vi.mock("@octokit/rest", () => ({
     rest;
     constructor(options: { auth?: { installationId?: number }; authStrategy?: object }) {
       this.rest = options.auth?.installationId
-        ? { repos: { get: octokit.authenticatedGet, getCommit: octokit.authenticatedGetCommit } }
+        ? {
+            repos: { get: octokit.authenticatedGet, getCommit: octokit.authenticatedGetCommit },
+            issues: { listForRepo: octokit.authenticatedListIssues },
+            pulls: { list: octokit.authenticatedListPulls },
+            actions: { listWorkflowRunsForRepo: octokit.authenticatedListRuns },
+          }
         : options.authStrategy
           ? { apps: { getRepoInstallation: octokit.getRepoInstallation } }
-          : { repos: octokit };
+          : {
+              repos: octokit,
+              issues: { listForRepo: octokit.listIssues },
+              pulls: { list: octokit.listPulls },
+              actions: { listWorkflowRunsForRepo: octokit.listRuns },
+            };
     }
   },
 }));
@@ -57,6 +73,12 @@ beforeEach(() => {
   octokit.getRepoInstallation.mockResolvedValue({ data: { id: 42 } });
   octokit.authenticatedGet.mockResolvedValue({ data: { ...repository, private: true } });
   octokit.authenticatedGetCommit.mockResolvedValue({ data: commit });
+  octokit.listIssues.mockResolvedValue({ data: [] });
+  octokit.listPulls.mockResolvedValue({ data: [] });
+  octokit.listRuns.mockResolvedValue({ data: { workflow_runs: [] } });
+  octokit.authenticatedListIssues.mockResolvedValue({ data: [] });
+  octokit.authenticatedListPulls.mockResolvedValue({ data: [] });
+  octokit.authenticatedListRuns.mockResolvedValue({ data: { workflow_runs: [] } });
   octokit.auth.mockImplementation(
     async (options: { factory: (config: StrategyOptions) => Octokit }) =>
       options.factory({ ...appConfig, installationId: 42 }),
@@ -265,5 +287,180 @@ describe("getRepositoryStatus", () => {
     await expect(
       getRepositoryStatus({ owner: "octocat", repo: "Hello-World" }),
     ).rejects.toMatchObject({ kind: "upstream" });
+  });
+});
+
+const ref = { owner: "octocat", repo: "Hello-World" };
+const issue = {
+  number: 12,
+  title: "Fix the build",
+  state: "open",
+  html_url: "https://github.com/octocat/Hello-World/issues/12",
+  user: { login: "octocat" },
+  labels: ["urgent", { name: "bug" }, { name: null }],
+  created_at: "2026-09-16T10:00:00Z",
+  updated_at: "2026-09-16T11:00:00Z",
+};
+const pull = {
+  number: 7,
+  title: "Improve CI",
+  state: "open",
+  html_url: "https://github.com/octocat/Hello-World/pull/7",
+  user: { login: "contributor" },
+  draft: true,
+  head: { ref: "ci-fix" },
+  base: { ref: "main" },
+  created_at: "2026-09-16T10:00:00Z",
+  updated_at: "2026-09-16T11:00:00Z",
+};
+const run = {
+  id: 42,
+  name: "CI",
+  event: "push",
+  status: "completed",
+  conclusion: "success",
+  head_branch: "main",
+  head_sha: "a".repeat(40),
+  html_url: "https://github.com/octocat/Hello-World/actions/runs/42",
+  created_at: "2026-09-16T10:00:00Z",
+  updated_at: "2026-09-16T11:00:00Z",
+};
+
+describe("read-only developer context", () => {
+  it("maps open issues, filters pull requests, and handles label shapes", async () => {
+    octokit.listIssues.mockResolvedValue({
+      data: [{ ...issue, pull_request: { url: "private" } }, issue, { ...issue, number: 13 }],
+    });
+    const result = await createGitHubRepositoryClient().listOpenIssues({ ...ref, limit: 1 });
+    expect(octokit.listIssues).toHaveBeenCalledWith({ ...ref, state: "open", per_page: 100 });
+    expect(result).toEqual({
+      repository: "octocat/Hello-World",
+      issues: [
+        {
+          number: 12,
+          title: "Fix the build",
+          state: "open",
+          url: issue.html_url,
+          authorLogin: "octocat",
+          labels: ["urgent", "bug"],
+          createdAt: issue.created_at,
+          updatedAt: issue.updated_at,
+        },
+      ],
+    });
+  });
+
+  it("returns an empty issue list", async () => {
+    expect(await createGitHubRepositoryClient().listOpenIssues(ref)).toEqual({
+      repository: "octocat/Hello-World",
+      issues: [],
+    });
+  });
+
+  it("maps open pull requests, drafts, and branches", async () => {
+    octokit.listPulls.mockResolvedValue({ data: [pull, { ...pull, number: 8, state: "closed" }] });
+    const result = await createGitHubRepositoryClient().listPullRequests({ ...ref, limit: 5 });
+    expect(octokit.listPulls).toHaveBeenCalledWith({ ...ref, state: "open", per_page: 5 });
+    expect(result.pullRequests).toEqual([
+      {
+        number: 7,
+        title: "Improve CI",
+        url: pull.html_url,
+        authorLogin: "contributor",
+        draft: true,
+        sourceBranch: "ci-fix",
+        targetBranch: "main",
+        createdAt: pull.created_at,
+        updatedAt: pull.updated_at,
+      },
+    ]);
+  });
+
+  it("returns an empty pull request list", async () => {
+    expect(await createGitHubRepositoryClient().listPullRequests(ref)).toEqual({
+      repository: "octocat/Hello-World",
+      pullRequests: [],
+    });
+  });
+
+  it("maps successful, failed, and in-progress workflow runs", async () => {
+    octokit.listRuns.mockResolvedValue({
+      data: {
+        workflow_runs: [
+          run,
+          { ...run, id: 43, conclusion: "failure" },
+          { ...run, id: 44, status: "in_progress", conclusion: null, head_branch: null },
+        ],
+      },
+    });
+    const result = await createGitHubRepositoryClient().listWorkflowRuns(ref);
+    expect(octokit.listRuns).toHaveBeenCalledWith({ ...ref, per_page: 10 });
+    expect(
+      result.workflowRuns.map(({ id, status, conclusion, branch }) => ({
+        id,
+        status,
+        conclusion,
+        branch,
+      })),
+    ).toEqual([
+      { id: 42, status: "completed", conclusion: "success", branch: "main" },
+      { id: 43, status: "completed", conclusion: "failure", branch: "main" },
+      { id: 44, status: "in_progress", conclusion: null, branch: null },
+    ]);
+    expect(result.workflowRuns[0]).toMatchObject({
+      workflowName: "CI",
+      event: "push",
+      commitSha: "a".repeat(40),
+      url: run.html_url,
+    });
+  });
+
+  it("returns an empty workflow run list", async () => {
+    expect(await createGitHubRepositoryClient().listWorkflowRuns(ref)).toEqual({
+      repository: "octocat/Hello-World",
+      workflowRuns: [],
+    });
+  });
+
+  it.each(["listOpenIssues", "listPullRequests", "listWorkflowRuns"] as const)(
+    "rejects invalid limits before calling GitHub through %s",
+    async (operation) => {
+      for (const limit of [0, 26, 1.5]) {
+        await expect(
+          createGitHubRepositoryClient()[operation]({ ...ref, limit }),
+        ).rejects.toThrow();
+      }
+      expect(octokit.getRepoInstallation).not.toHaveBeenCalled();
+      expect(octokit.listIssues).not.toHaveBeenCalled();
+      expect(octokit.listPulls).not.toHaveBeenCalled();
+      expect(octokit.listRuns).not.toHaveBeenCalled();
+    },
+  );
+
+  it("uses the repository installation for private list operations", async () => {
+    const client = createGitHubRepositoryClient(appConfig);
+    await client.listOpenIssues(ref);
+    await client.listPullRequests(ref);
+    await client.listWorkflowRuns(ref);
+    expect(octokit.getRepoInstallation).toHaveBeenCalledTimes(3);
+    expect(octokit.authenticatedListIssues).toHaveBeenCalledOnce();
+    expect(octokit.authenticatedListPulls).toHaveBeenCalledOnce();
+    expect(octokit.authenticatedListRuns).toHaveBeenCalledOnce();
+    expect(octokit.listIssues).not.toHaveBeenCalled();
+  });
+
+  it("sanitizes unavailable Actions and malformed upstream data", async () => {
+    octokit.listRuns.mockRejectedValue(Object.assign(new Error("secret-token"), { status: 404 }));
+    await expect(createGitHubRepositoryClient().listWorkflowRuns(ref)).rejects.toMatchObject({
+      kind: "not_found",
+      message: "not_found",
+    });
+    octokit.listRuns.mockResolvedValue({
+      data: { workflow_runs: [{ ...run, head_sha: "invalid" }] },
+    });
+    await expect(createGitHubRepositoryClient().listWorkflowRuns(ref)).rejects.toMatchObject({
+      kind: "upstream",
+      message: "upstream",
+    });
   });
 });

@@ -16,9 +16,15 @@ try {
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
   if (client.getServerVersion()?.name !== "voxops") throw new Error("Unexpected MCP server");
 
-  const tools = (await client.listTools()).tools;
-  if (tools.length !== 1 || tools[0]?.name !== "get_repository_status") {
-    throw new Error("Repository status tool is unavailable");
+  const tools = (await client.listTools()).tools.map((tool) => tool.name);
+  const expected = [
+    "get_repository_status",
+    "list_open_issues",
+    "list_pull_requests",
+    "list_workflow_runs",
+  ];
+  if (tools.length !== expected.length || expected.some((name) => !tools.includes(name))) {
+    throw new Error("Expected MCP tools are unavailable");
   }
 
   const result = await client.callTool({ name: "get_repository_status", arguments: ref });
@@ -43,9 +49,34 @@ try {
     throw new Error("Repository status result is incomplete");
   }
 
+  const counts: string[] = [];
+  for (const [name, field] of [
+    ["list_open_issues", "issues"],
+    ["list_pull_requests", "pullRequests"],
+    ["list_workflow_runs", "workflowRuns"],
+  ] as const) {
+    const listed = await client.callTool({ name, arguments: ref });
+    const text = listed.content.find((item) => item.type === "text");
+    const data = listed.structuredContent;
+    const items =
+      data && typeof data === "object" && !Array.isArray(data) && field in data
+        ? (data as Record<string, unknown>)[field]
+        : undefined;
+    if (
+      listed.isError ||
+      text?.type !== "text" ||
+      !text.text.includes(`${ref.owner}/${ref.repo}`) ||
+      !Array.isArray(items)
+    ) {
+      throw new Error(`${name} result is incomplete`);
+    }
+    counts.push(`${name}: ${items.length}`);
+  }
+
   console.log(
-    `MCP smoke passed: connected, listed get_repository_status, and read ${status.fullName} (${status.private ? "private" : "public"}, ${status.defaultBranch}).`,
+    `MCP smoke passed for ${status.fullName} (${status.private ? "private" : "public"}).`,
   );
+  console.log(counts.join(", "));
 } catch {
   console.error("MCP smoke failed. Check the local server and GitHub App configuration.");
   process.exitCode = 1;
