@@ -104,14 +104,12 @@ function ToolActivity({ items }: { items: Activity[] }) {
   );
 }
 
-function ContextPanel({
-  context,
-  hasLiveData,
-}: {
-  context: RepositoryContext;
-  hasLiveData: boolean;
-}) {
+function ContextPanel({ context }: { context: RepositoryContext }) {
+  const defaultBranch = text(context.status?.defaultBranch);
+  const archived = context.status?.archived;
   const commit = asObject(context.status?.latestCommit);
+  const commitMessage = text(commit?.message)?.split("\n")[0];
+  const commitSha = text(commit?.sha)?.slice(0, 7);
   const issueCount = Array.isArray(context.issues?.issues)
     ? context.issues.issues.length
     : undefined;
@@ -123,59 +121,74 @@ function ContextPanel({
     : undefined;
   const latestRun = runs ? asObject(runs[0]) : undefined;
   const conclusion = text(latestRun?.conclusion) ?? text(latestRun?.status);
+  const hasContext =
+    !!defaultBranch ||
+    typeof archived === "boolean" ||
+    !!commitMessage ||
+    issueCount !== undefined ||
+    pullCount !== undefined ||
+    runs !== undefined;
   return (
     <aside className="context-panel" aria-label="Live repository context">
-      <div className="panel-heading">
-        <span className="eyebrow">LIVE REPOSITORY CONTEXT</span>
-        <span
-          className={`context-indicator ${hasLiveData ? "active" : ""}`}
-          aria-label={hasLiveData ? "Live data loaded" : "Awaiting live data"}
-        />
-      </div>
+      <span className="eyebrow">LIVE REPOSITORY CONTEXT</span>
       <div className="repo-identity">
         <span className="repo-owner">ibodev1 /</span>
         <strong>voxops</strong>
-        <p>Public repository · read-only access</p>
       </div>
-      <div className="context-section">
-        <span className="context-label">REPOSITORY</span>
-        <div className="context-line">
-          <span>Default branch</span>
-          <strong>{text(context.status?.defaultBranch) ?? "—"}</strong>
-        </div>
-        <div className="context-line">
-          <span>State</span>
-          <strong>
-            {context.status ? (context.status.archived ? "Archived" : "Active") : "—"}
-          </strong>
-        </div>
-      </div>
-      <div className="context-section">
-        <span className="context-label">LATEST COMMIT</span>
-        <p className="commit-message">
-          {text(commit?.message)?.split("\n")[0] ??
-            "Ask about the repository to load a live commit."}
+      {!hasContext && (
+        <p className="context-empty">
+          Repository context will appear after the first live response.
         </p>
-        <span className="commit-sha">{text(commit?.sha)?.slice(0, 7) ?? "Not checked yet"}</span>
-      </div>
-      <div className="context-section context-counts">
-        <div>
-          <span className="context-label">OPEN ISSUES SHOWN</span>
-          <strong>{issueCount ?? "—"}</strong>
+      )}
+      {(defaultBranch || typeof archived === "boolean") && (
+        <div className="context-section">
+          <span className="context-label">REPOSITORY</span>
+          {defaultBranch && (
+            <div className="context-line">
+              <span>Default branch</span>
+              <strong>{defaultBranch}</strong>
+            </div>
+          )}
+          {typeof archived === "boolean" && (
+            <div className="context-line">
+              <span>State</span>
+              <strong>{archived ? "Archived" : "Active"}</strong>
+            </div>
+          )}
         </div>
-        <div>
-          <span className="context-label">OPEN PRS SHOWN</span>
-          <strong>{pullCount ?? "—"}</strong>
+      )}
+      {(commitMessage || commitSha) && (
+        <div className="context-section">
+          <span className="context-label">LATEST COMMIT</span>
+          {commitMessage && <p className="commit-message">{commitMessage}</p>}
+          {commitSha && <span className="commit-sha">{commitSha}</span>}
         </div>
-      </div>
-      <div className="context-section workflow-section">
-        <span className="context-label">RECENT WORKFLOW</span>
-        <strong className={conclusion === "failure" ? "workflow-failure" : ""}>
-          {conclusion ?? (runs ? "No recent runs" : "Not checked yet")}
-        </strong>
-        {latestRun && <span>{text(latestRun.workflowName) ?? "Workflow"}</span>}
-      </div>
-      <div className="panel-foot">Values appear here only after a live MCP tool response.</div>
+      )}
+      {(issueCount !== undefined || pullCount !== undefined) && (
+        <div className="context-section context-counts">
+          {issueCount !== undefined && (
+            <div>
+              <span className="context-label">OPEN ISSUES SHOWN</span>
+              <strong>{issueCount}</strong>
+            </div>
+          )}
+          {pullCount !== undefined && (
+            <div>
+              <span className="context-label">OPEN PRS SHOWN</span>
+              <strong>{pullCount}</strong>
+            </div>
+          )}
+        </div>
+      )}
+      {runs && (runs.length === 0 || conclusion) && (
+        <div className="context-section workflow-section">
+          <span className="context-label">RECENT WORKFLOW</span>
+          <strong className={conclusion === "failure" ? "workflow-failure" : ""}>
+            {conclusion ?? "No recent runs"}
+          </strong>
+          {text(latestRun?.workflowName) && <span>{text(latestRun?.workflowName)}</span>}
+        </div>
+      )}
     </aside>
   );
 }
@@ -240,8 +253,6 @@ export function App() {
   }
 
   const retryQuestion = turns.at(-1)?.role === "user" ? turns.at(-1)?.content : undefined;
-  const hasLiveData = Object.values(context).some(Boolean);
-
   return (
     <div className="app-shell min-h-screen">
       <header className="app-header">
@@ -267,18 +278,14 @@ export function App() {
         <section className="conversation-panel" aria-label="Conversation">
           <div className="conversation-head">
             <div>
-              <span className="eyebrow">CONVERSATION / 01</span>
-              <h1>Ask the repository.</h1>
+              <span className="eyebrow">CONVERSATION</span>
+              <h1>Ask VoxOps about the repository.</h1>
             </div>
-            <span className="conversation-note">Live answers through MCP</span>
           </div>
           <div className="conversation-scroll" aria-live="polite">
             <div className="welcome-message">
               <span className="speaker">VOXOPS</span>
-              <p>
-                I can read the public VoxOps repository and turn its current state into a clear
-                update. What would you like to know?
-              </p>
+              <p>Ask about the latest commit, open work, or recent workflows in ibodev1/voxops.</p>
             </div>
             {turns.map((turn, index) => (
               <article className={`message message-${turn.role}`} key={index}>
@@ -316,7 +323,6 @@ export function App() {
                     disabled={loading}
                   >
                     {prompt.label}
-                    <span aria-hidden="true">↗</span>
                   </button>
                 ))}
               </div>
@@ -346,11 +352,10 @@ export function App() {
             </div>
           </div>
         </section>
-        <ContextPanel context={context} hasLiveData={hasLiveData} />
+        <ContextPanel context={context} />
       </main>
       <footer className="app-footer">
         <span>Simulated Alexa+ experience powered by the live VoxOps MCP server.</span>
-        <span>NO ACCOUNT LINKING · NO WRITE ACTIONS</span>
       </footer>
     </div>
   );
