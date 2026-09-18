@@ -112,7 +112,6 @@ export class VoxOpsDevStack extends Stack {
       architecture: Architecture.ARM_64,
       memorySize: 256,
       timeout: Duration.seconds(60),
-      reservedConcurrentExecutions: 2,
       role: chatRole,
       logGroup: chatLogs,
       bundling: {
@@ -187,8 +186,8 @@ export class VoxOpsDevStack extends Stack {
       cloudWatchRole: false,
       deployOptions: {
         stageName: "dev",
-        throttlingRateLimit: 10,
-        throttlingBurstLimit: 20,
+        throttlingRateLimit: 2,
+        throttlingBurstLimit: 2,
       },
     });
     chatApi.root

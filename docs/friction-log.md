@@ -188,3 +188,14 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Low
 - **Workaround:** Leave REST access logs off in this milestone; retain seven-day chat Lambda logs and API Gateway metrics. The HTTP API access logs remain enabled.
 - **Suggested improvement:** Decide separately whether account-level REST logging is warranted after live verification.
+
+## 2026-09-18: Chat Lambda reserved concurrency blocked deployment
+
+- **Date:** 2026-09-18
+- **Component/tool:** AWS Lambda / CloudFormation
+- **Task:** Deploy the dedicated streaming ChatRuntime with two reserved concurrent executions.
+- **Expected behavior:** Reserve two chat executions while leaving sufficient unreserved account concurrency.
+- **Actual behavior:** Deployment failed because reserving two executions would reduce the account's unreserved concurrency below AWS's minimum of 10. CloudFormation rolled back; the existing production stack remained healthy.
+- **Severity:** Medium
+- **Workaround:** Remove ChatRuntime reserved concurrency and limit public-demo request pressure at the REST API stage to 2 requests/second with burst 2.
+- **Suggested improvement:** Check available account concurrency before adding a reservation; document API Gateway throttling as best effort rather than a hard billing cap.

@@ -79,7 +79,7 @@ it("routes one uncached CloudFront chat behavior to the REST stage", () => {
   });
 });
 
-it("bounds Lambda cost and Bedrock permissions to the chat execution role", () => {
+it("keeps Lambda concurrency unreserved and Bedrock permissions scoped to chat", () => {
   template.resourceCountIs("AWS::Lambda::Function", 2);
   template.resourceCountIs("AWS::IAM::Role", 2);
   template.resourceCountIs("AWS::IAM::Policy", 2);
@@ -92,6 +92,7 @@ it("bounds Lambda cost and Bedrock permissions to the chat execution role", () =
       Timeout: 60,
     });
     expect(fn.Properties.VpcConfig).toBeUndefined();
+    expect(fn.Properties.ReservedConcurrentExecutions).toBeUndefined();
   }
   const runtime = functions.find(
     ([, fn]) => fn.Properties.Environment?.Variables?.VOXOPS_PUBLIC_REPOSITORIES,
@@ -101,8 +102,8 @@ it("bounds Lambda cost and Bedrock permissions to the chat execution role", () =
   );
   expect(runtime).toBeDefined();
   expect(chat).toBeDefined();
-  expect(runtime![1].Properties.ReservedConcurrentExecutions).toBeUndefined();
-  expect(chat![1].Properties.ReservedConcurrentExecutions).toBe(2);
+  template.resourceCountIs("AWS::Lambda::Alias", 0);
+  expect(JSON.stringify(template.toJSON())).not.toContain("ProvisionedConcurrencyConfig");
   expect(runtime![1].Properties.Environment.Variables.VOXOPS_MCP_REMOTE_URL).toBeUndefined();
   expect(chat![1].Properties.Environment.Variables.VOXOPS_PUBLIC_REPOSITORIES).toBeUndefined();
   const policies = resource("AWS::IAM::Policy");
@@ -135,8 +136,8 @@ it("uses finite runtime/HTTP access logs and excludes costly or secret resources
   template.hasResourceProperties("AWS::ApiGateway::Stage", {
     MethodSettings: Match.arrayWith([
       Match.objectLike({
-        ThrottlingRateLimit: 10,
-        ThrottlingBurstLimit: 20,
+        ThrottlingRateLimit: 2,
+        ThrottlingBurstLimit: 2,
       }),
     ]),
   });
