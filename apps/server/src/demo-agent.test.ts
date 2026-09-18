@@ -123,6 +123,49 @@ it("maps Bedrock tool use to the discovered MCP capability and forwards the resu
   expect(mcp.close).toHaveBeenCalledOnce();
 });
 
+it("removes Nova thinking blocks only from the final model answer", async () => {
+  const literalHistory = [{ role: "user" as const, content: "What does <thinking> mean?" }];
+  const final = {
+    output: {
+      message: {
+        role: "assistant",
+        content: [
+          { text: "<thinking>private plan" },
+          { text: "private trace</thinking>The repository is active." },
+          { text: "<thinking>more private reasoning</thinking>CI is green." },
+        ],
+      },
+    },
+    stopReason: "end_turn",
+  } as ConverseCommandOutput;
+  const converse = vi
+    .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()
+    .mockResolvedValueOnce(toolUse("get_repository_status"))
+    .mockResolvedValueOnce(final);
+  const result = await runDemoChat(literalHistory, endpoint, converse);
+  expect(result.message).toBe("The repository is active.\nCI is green.");
+  expect(JSON.stringify(result)).not.toMatch(
+    /thinking|private plan|private trace|private reasoning/,
+  );
+  expect(result.activity).toMatchObject([
+    { name: "get_repository_status", status: "ok", result: { fullName: "ibodev1/voxops" } },
+  ]);
+  expect(converse.mock.calls[0]![0].messages?.[0]?.content).toEqual([
+    { text: "What does <thinking> mean?" },
+  ]);
+});
+
+it("fails safely if a Nova thinking block is left open", async () => {
+  const converse = vi
+    .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()
+    .mockResolvedValueOnce(toolUse("get_repository_status"))
+    .mockResolvedValueOnce(answer("<thinking>private trace"));
+  await expect(runDemoChat(history, endpoint, converse)).rejects.toThrow(
+    "Malformed Bedrock thinking block",
+  );
+  expect(mcp.close).toHaveBeenCalledOnce();
+});
+
 it("bounds repeated tool requests at three rounds", async () => {
   const converse = vi
     .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()

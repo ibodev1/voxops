@@ -39,6 +39,35 @@ type ToolName = (typeof TOOL_NAMES)[number];
 const MODEL_ID = "eu.amazon.nova-micro-v1:0";
 const MAX_TOOL_ROUNDS = 3;
 const MAX_TOOL_CALLS = 6;
+const THINKING_OPEN = "<thinking>";
+const THINKING_CLOSE = "</thinking>";
+
+function removeThinkingBlocks(text: string): string {
+  let visible = "";
+  let cursor = 0;
+  let depth = 0;
+  while (cursor < text.length) {
+    const open = text.indexOf(THINKING_OPEN, cursor);
+    const close = text.indexOf(THINKING_CLOSE, cursor);
+    const nextIsOpen = open !== -1 && (close === -1 || open < close);
+    const next = nextIsOpen ? open : close;
+    if (next === -1) {
+      if (depth === 0) visible += text.slice(cursor);
+      break;
+    }
+    if (depth === 0) visible += text.slice(cursor, next);
+    if (nextIsOpen) {
+      depth++;
+      cursor = next + THINKING_OPEN.length;
+    } else {
+      if (depth === 0) throw new Error("Malformed Bedrock thinking block");
+      depth--;
+      cursor = next + THINKING_CLOSE.length;
+    }
+  }
+  if (depth !== 0) throw new Error("Malformed Bedrock thinking block");
+  return visible.trim();
+}
 
 export type ToolActivity = {
   name: ToolName;
@@ -108,10 +137,9 @@ export async function runDemoChat(
       const answer = response.output?.message;
       if (!answer?.content) throw new Error("Bedrock response unavailable");
       if (response.stopReason !== "tool_use") {
-        const text = answer.content
-          .flatMap((block) => (block.text ? [block.text] : []))
-          .join("\n")
-          .trim();
+        const text = removeThinkingBlocks(
+          answer.content.flatMap((block) => (block.text ? [block.text] : [])).join("\n"),
+        );
         if (!text || activity.length === 0) throw new Error("Ungrounded Bedrock response");
         return { message: text.slice(0, 1600), activity };
       }
