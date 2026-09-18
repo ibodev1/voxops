@@ -6,6 +6,22 @@ type HttpV2Event = Extract<LambdaEvent, { rawPath: string }>;
 const health: HttpV2Event = JSON.parse(
   readFileSync(new URL("../../../scripts/aws/events/health.json", import.meta.url), "utf8"),
 );
+function chatEvent(body: string, contentType = "application/json"): HttpV2Event {
+  const path = "/api/demo/chat";
+  return {
+    ...health,
+    rawPath: path,
+    routeKey: "POST /api/demo/chat",
+    headers: { host: "voxops.example", "content-type": contentType },
+    body,
+    requestContext: {
+      ...health.requestContext,
+      domainName: "voxops.example",
+      routeKey: "POST /api/demo/chat",
+      http: { ...health.requestContext.http, method: "POST", path },
+    },
+  };
+}
 
 beforeEach(() => {
   vi.resetModules();
@@ -66,6 +82,43 @@ it("allows unauthenticated remote MCP discovery through the real Lambda v2 adapt
     "list_workflow_runs",
   ]);
   expect(fetch).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["wrong content type", "{}", "text/plain", 415],
+  ["invalid JSON", "{", "application/json", 400],
+  ["empty request", JSON.stringify({ messages: [] }), "application/json", 400],
+  [
+    "extra field",
+    JSON.stringify({ messages: [{ role: "user", content: "status" }], debug: true }),
+    "application/json",
+    400,
+  ],
+  ["oversized body", "x".repeat(4097), "application/json", 413],
+] as const)("rejects %s before model or MCP access", async (_case, body, contentType, status) => {
+  const { handler } = await import("./lambda.js");
+  const response = await handler(chatEvent(body, contentType));
+  expect(response.statusCode).toBe(status);
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("returns a sanitized gateway response when the demo agent fails", async () => {
+  vi.stubEnv("VOXOPS_MCP_REMOTE_URL", "https://example.test/mcp");
+  vi.doMock("./demo-agent.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("./demo-agent.js")>()),
+    runDemoChat: vi.fn().mockRejectedValue(new Error("Bedrock internal detail")),
+  }));
+  try {
+    const { handler } = await import("./lambda.js");
+    const response = await handler(
+      chatEvent(JSON.stringify({ messages: [{ role: "user", content: "status" }] })),
+    );
+    expect(response.statusCode).toBe(502);
+    expect(JSON.parse(response.body)).toEqual({ error: "demo_unavailable" });
+    expect(response.body).not.toContain("Bedrock internal detail");
+  } finally {
+    vi.doUnmock("./demo-agent.js");
+  }
 });
 
 it.each([

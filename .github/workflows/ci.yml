@@ -24,3 +24,4 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm infra:synth
+      - run: pnpm --filter @voxops/web build

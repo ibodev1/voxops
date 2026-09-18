@@ -15,7 +15,7 @@ const template = Template.fromStack(stack);
 app.synth();
 afterAll(() => rmSync(outdir, { recursive: true, force: true }));
 
-it("synthesizes only the public MCP HTTP boundary", () => {
+it("synthesizes only the public MCP and demo HTTP boundary", () => {
   template.resourceCountIs("AWS::Lambda::Function", 1);
   template.resourceCountIs("AWS::Logs::LogGroup", 2);
   template.resourceCountIs("AWS::IAM::Role", 1);
@@ -32,10 +32,12 @@ it("synthesizes only the public MCP HTTP boundary", () => {
     "AWS::ApiGatewayV2::Integration",
     "AWS::ApiGatewayV2::Route",
     "AWS::ApiGatewayV2::Route",
+    "AWS::ApiGatewayV2::Route",
     "AWS::ApiGatewayV2::Stage",
     "AWS::IAM::Policy",
     "AWS::IAM::Role",
     "AWS::Lambda::Function",
+    "AWS::Lambda::Permission",
     "AWS::Lambda::Permission",
     "AWS::Lambda::Permission",
     "AWS::Logs::LogGroup",
@@ -43,18 +45,22 @@ it("synthesizes only the public MCP HTTP boundary", () => {
   ]);
 });
 
-const routeKeys = ["GET /health", "POST /mcp"];
+const routeKeys = ["GET /health", "POST /api/demo/chat", "POST /mcp"];
 
-it("routes only health and MCP POST to the existing Lambda", () => {
+it("routes only health, MCP POST, and demo chat to the existing Lambda", () => {
   const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
   const integration = Object.keys(template.findResources("AWS::ApiGatewayV2::Integration"))[0];
   const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
   template.resourceCountIs("AWS::ApiGatewayV2::Api", 1);
-  template.resourceCountIs("AWS::ApiGatewayV2::Route", 2);
+  template.resourceCountIs("AWS::ApiGatewayV2::Route", 3);
   template.resourceCountIs("AWS::ApiGatewayV2::Integration", 1);
   template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
     ProtocolType: "HTTP",
-    CorsConfiguration: Match.absent(),
+    CorsConfiguration: {
+      AllowOrigins: ["http://127.0.0.1:5173", "http://localhost:5173"],
+      AllowMethods: ["GET", "POST"],
+      AllowHeaders: ["content-type"],
+    },
     // No quick-create/default route or external OpenAPI routes.
     Target: Match.absent(),
     RouteKey: Match.absent(),
@@ -88,10 +94,10 @@ it("routes only health and MCP POST to the existing Lambda", () => {
   // Exact route keys forbid OAuth, repository routes, GET /mcp, ANY and $default catch-alls.
 });
 
-it("limits invocation grants to this API's two explicit paths", () => {
+it("limits invocation grants to this API's three explicit paths", () => {
   const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
   const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
-  template.resourceCountIs("AWS::Lambda::Permission", 2);
+  template.resourceCountIs("AWS::Lambda::Permission", 3);
   for (const routeKey of routeKeys)
     template.hasResourceProperties(
       "AWS::Lambda::Permission",
@@ -155,16 +161,20 @@ it("uses a throttled default stage and only minimal structured access logs", () 
 });
 
 it("uses bounded runtime cost and environment settings", () => {
+  const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
   template.hasResourceProperties("AWS::Lambda::Function", {
     Runtime: "nodejs24.x",
     Handler: "index.handler",
     Architectures: ["arm64"],
     MemorySize: 256,
-    Timeout: 10,
+    Timeout: 60,
     Environment: {
-      Variables: Match.objectEquals({
+      Variables: {
         VOXOPS_PUBLIC_REPOSITORIES: "ibodev1/voxops",
-      }),
+        VOXOPS_MCP_REMOTE_URL: {
+          "Fn::Join": ["", [{ "Fn::GetAtt": [api, "ApiEndpoint"] }, "/mcp"]],
+        },
+      },
     },
     VpcConfig: Match.absent(),
     ReservedConcurrentExecutions: Match.absent(),
@@ -178,7 +188,7 @@ it("uses bounded runtime cost and environment settings", () => {
   });
 });
 
-it("allows only log writes", () => {
+it("allows log writes and narrowly scoped Nova inference only", () => {
   const logs = template.toJSON().Outputs.RuntimeLogGroupName.Value.Ref as string;
   const role = Object.keys(template.findResources("AWS::IAM::Role"))[0];
   template.hasResourceProperties("AWS::IAM::Role", {
@@ -199,7 +209,7 @@ it("allows only log writes", () => {
     Roles: [{ Ref: role }],
     PolicyDocument: {
       Version: "2012-10-17",
-      Statement: Match.arrayEquals([
+      Statement: Match.arrayWith([
         {
           Effect: "Allow",
           Action: ["logs:CreateLogStream", "logs:PutLogEvents"],
@@ -212,6 +222,45 @@ it("allows only log writes", () => {
     Role: { "Fn::GetAtt": [role, "Arn"] },
     LoggingConfig: { LogGroup: { Ref: logs } },
   });
+  const statements = Object.values(template.findResources("AWS::IAM::Policy"))[0]!.Properties
+    .PolicyDocument.Statement as Array<Record<string, unknown>>;
+  expect(statements).toHaveLength(3);
+  const bedrock = statements.filter((statement) => statement.Action === "bedrock:InvokeModel");
+  expect(bedrock).toHaveLength(2);
+  expect(bedrock[0]!.Resource).toEqual({
+    "Fn::Join": [
+      "",
+      [
+        "arn:",
+        { Ref: "AWS::Partition" },
+        ":bedrock:",
+        { Ref: "AWS::Region" },
+        ":",
+        { Ref: "AWS::AccountId" },
+        ":inference-profile/eu.amazon.nova-micro-v1:0",
+      ],
+    ],
+  });
+  expect(bedrock[1]!.Condition).toEqual({
+    StringEquals: {
+      "bedrock:InferenceProfileArn": bedrock[0]!.Resource,
+    },
+  });
+  expect((bedrock[1]!.Resource as unknown[]).map((resource) => JSON.stringify(resource))).toEqual(
+    ["eu-central-1", "eu-north-1", "eu-west-1", "eu-west-3"].map((region) =>
+      JSON.stringify({
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            { Ref: "AWS::Partition" },
+            `:bedrock:${region}::foundation-model/amazon.nova-micro-v1:0`,
+          ],
+        ],
+      }),
+    ),
+  );
+  expect(JSON.stringify(statements)).not.toMatch(/bedrock:\*|Resource":"\*"|secretsmanager/i);
 });
 
 it("outputs identifiers only and packages only the bundled handler", () => {

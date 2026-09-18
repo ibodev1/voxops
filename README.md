@@ -1,6 +1,6 @@
 # VoxOps
 
-VoxOps is a voice-first Alexa+ developer assistant that reads **public GitHub repository state** through MCP Streamable HTTP. The hackathon demo has four read-only tools:
+VoxOps is a voice-first Alexa+ developer assistant that reads **public GitHub repository state** through MCP Streamable HTTP. It offers a real self-hosted MCP server and an optional web-based **simulated Alexa+ experience** for conversational demos. The simulation is not the official Alexa Web Simulator. The [Alexa+ hackathon rules](https://amazonappdev2026.devpost.com/rules) allow a simulated Alexa+ experience; Alexa developer-tool onboarding for the live Add-on flow remains pending. The MCP server has four read-only tools:
 
 - `get_repository_status`: branch, latest commit, and repository state
 - `list_open_issues`: open issues, excluding pull requests
@@ -28,11 +28,28 @@ pnpm mcp:smoke
 
 The smoke script initializes MCP, lists exactly four tools, invokes each against the configured public repository, and verifies that a nonallowlisted name is rejected. Set `VOXOPS_MCP_URL` to a full `/mcp` URL to test a deployed endpoint.
 
+### Run the simulated experience
+
+The web app calls a server-side Bedrock Converse agent. The agent uses the official MCP client to call the same VoxOps `/mcp` endpoint; it does not call GitHub directly. For local development, use AWS temporary credentials with Bedrock access and run the server and web app in separate terminals:
+
+```powershell
+$env:AWS_PROFILE = '<your-temporary-credential-profile>'
+$env:AWS_REGION = 'eu-central-1'
+$env:VOXOPS_PUBLIC_REPOSITORIES = 'ibodev1/voxops'
+pnpm dev:server
+```
+
+```powershell
+pnpm --filter @voxops/web dev
+```
+
+Open `http://127.0.0.1:5173`. Vite proxies local `/api` requests to the server on port 3000; the local server uses its loopback `/mcp` endpoint by default. To make it call the deployed MCP server instead, set `VOXOPS_MCP_REMOTE_URL` to the full public `/mcp` URL before starting the server. For a deployed backend, build the static web app with `VITE_VOXOPS_API_URL` set to the public API endpoint, with no trailing `/mcp` path. No AWS credentials belong in Vite variables. The Bedrock profile and manual deployment prerequisites are in [AWS development](docs/aws-development.md).
+
 ## AWS boundary
 
-CDK defines one HTTP API with only `GET /health` and `POST /mcp`, one 256 MB ARM64 Lambda, and seven-day runtime/access logs. API Gateway throttling is 10 requests per second with burst 20. No REST repository routes, catch-all, Cognito, Secrets Manager access, database, VPC, or always-on compute are configured. [AWS development and manual deployment](docs/aws-development.md) has the commands and smoke checks.
+CDK defines one HTTP API with only `GET /health`, `POST /mcp`, and `POST /api/demo/chat`, one 256 MB ARM64 Lambda, and seven-day runtime/access logs. The Lambda calls the deployed MCP URL through API Gateway for demo chat. API Gateway throttling is 10 requests per second with burst 20. No REST repository routes, catch-all, Cognito, Secrets Manager access, database, VPC, or always-on compute are configured. [AWS development and manual deployment](docs/aws-development.md) has the commands and smoke checks.
 
-Account linking and service authentication are intentionally disabled for this public, user-independent demo. [The Alexa M6 checklist](docs/alexa-m6-checklist.md) records the remaining live Add-on validation. Private repository GitHub App access, account linking, and safe write actions are possible future work, outside this demo.
+Account linking and service authentication are intentionally disabled for this public, user-independent demo. [The Alexa CLI access blocker](docs/alexa-cli-access-blocker.md) and [Alexa M6 checklist](docs/alexa-m6-checklist.md) record the remaining live Add-on work. Private repository GitHub App access, account linking, and safe write actions are possible future work, outside this demo.
 
 ## Verify changes
 
@@ -42,4 +59,5 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm infra:synth
+pnpm --filter @voxops/web build
 ```

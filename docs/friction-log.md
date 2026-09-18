@@ -133,3 +133,14 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Low
 - **Workaround:** Decode the response when `isBase64Encoded` is true, then parse the SSE `data:` line in the deterministic fixture test.
 - **Suggested improvement:** Keep direct Lambda tests aware of response content type; use the SDK transport for full MCP exchange tests.
+
+## 2026-09-18: Bedrock SDK release-age guard
+
+- **Date:** 2026-09-18
+- **Component/tool:** pnpm workspace release-age policy / AWS SDK
+- **Task:** Add the Bedrock runtime client without bypassing the dependency freshness gate
+- **Expected behavior:** A pinned available SDK version installs under the existing policy.
+- **Actual behavior:** The initially selected latest `@aws-sdk/client-bedrock-runtime` release was too recent for the workspace's release-age guard, and pnpm added an exception during installation.
+- **Severity:** Low
+- **Workaround:** Pin `3.1127.0`, which installs under the guard, and remove the generated SDK exception.
+- **Suggested improvement:** Check release age before pinning a new AWS SDK package; keep exceptions narrow and reviewed.

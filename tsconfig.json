@@ -10,6 +10,7 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitReturns": true,
     "useUnknownInCatchVariables": true,
+    "jsx": "react-jsx",
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "skipLibCheck": true,
@@ -19,6 +20,7 @@
   "include": [
     "vitest.config.ts",
     "apps/**/*.ts",
+    "apps/**/*.tsx",
     "packages/**/*.ts",
     "scripts/**/*.ts",
     "infra/**/*.ts"

@@ -1,0 +1,23 @@
+:root {
+  --color-paper: #101216;
+  --color-panel: #171a1f;
+  --color-panel-raised: #1e2228;
+  --color-panel-soft: #15181d;
+  --color-border: #2c3037;
+  --color-border-strong: #474b52;
+  --color-ink: #f0eee9;
+  --color-muted: #aaa9a5;
+  --color-faint: #92979e;
+  --color-accent: #dda874;
+  --color-accent-ink: #101216;
+  --color-accent-soft: #2d251f;
+  --color-success: #9dc3a5;
+  --color-error: #dd9b94;
+  --font-display: "DM Sans", "Segoe UI", sans-serif;
+  --font-body: "DM Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, monospace;
+  --space-page: clamp(1rem, 3vw, 3rem);
+  --radius-panel: 1.2rem;
+  --radius-control: 0.8rem;
+  --rule-subtle: 1px solid var(--color-border);
+}
