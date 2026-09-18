@@ -4,14 +4,24 @@ import { Hono, type Context } from "hono";
 import { RepositoryListInputSchema, RepositoryRefSchema } from "@voxops/contracts";
 import { GitHubRepositoryError, type GitHubRepositoryClient } from "@voxops/github";
 import { createMcpServer } from "./mcp.js";
+import { createServiceAuthApp, type ServiceAuthOptions } from "./service-auth.js";
 
-export function createApp(github: GitHubRepositoryClient): Hono {
+export function createApp(
+  github: GitHubRepositoryClient,
+  options: ServiceAuthOptions = { runtime: "local", environment: {} },
+): Hono {
   const app = createMcpHonoApp();
   const mcp = createMcpHandler(() => createMcpServer(github));
 
-  app.all("/mcp", (context: Context) =>
-    mcp.fetch(context.req.raw, { parsedBody: context.get("parsedBody") }),
-  );
+  if (options.runtime === "local") {
+    if (options.environment.VOXOPS_ALEXA_AUTH_SECRET_ID?.trim()) {
+      app.route("/", createServiceAuthApp(mcp, options));
+    } else {
+      app.all("/mcp", (context: Context) =>
+        mcp.fetch(context.req.raw, { parsedBody: context.get("parsedBody") }),
+      );
+    }
+  }
 
   app.get("/api/repositories/:owner/:repo/status", async (context) => {
     const parsed = RepositoryRefSchema.safeParse(context.req.param());
@@ -60,6 +70,7 @@ export function createApp(github: GitHubRepositoryClient): Hono {
   // Public health must accept API Gateway's Host without relaxing the capability guards.
   const entry = new Hono();
   entry.get("/health", (context) => context.json({ status: "ok" }));
+  if (options.runtime === "lambda") entry.route("/", createServiceAuthApp(mcp, options));
   entry.route("/", app);
   return entry;
 }

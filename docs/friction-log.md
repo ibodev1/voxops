@@ -89,3 +89,25 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Low
 - **Workaround:** `aws logs describe-log-groups` revealed the actual group.
 - **Suggested improvement:** Milestone 5B outputs `RuntimeLogGroupName` and `ApiAccessLogGroupName` and documents output-based discovery without renaming existing resources.
+
+## 2026-09-17: Alexa challenges and the pinned MCP SDK
+
+- **Date:** 2026-09-17
+- **Component/tool:** Alexa+ authentication documentation / MCP TypeScript SDK 2.0.0
+- **Task:** Return HTTP authentication/authorization failures for service-only MCP discovery
+- **Expected behavior:** Reuse SDK HTTP auth helpers and the current main-branch documentation's scope challenge mechanism.
+- **Actual behavior:** Installed bearer challenge helpers emit WWW-Authenticate, which current Alexa documentation lists as unsupported. The scopeChallenge mechanism described on the SDK main branch is absent from the installed release.
+- **Severity:** Medium
+- **Workaround:** Reuse verifyBearerToken and AuthInfo, map safe JSON 401/403 responses without the header, and reject tools/call at the HTTP boundary before official SDK dispatch.
+- **Suggested improvement:** Version SDK documentation and make challenge behavior configurable for documented client requirements.
+
+## 2026-09-17: Protected-resource metadata builder requires a user-flow endpoint
+
+- **Date:** 2026-09-17
+- **Component/tool:** MCP TypeScript SDK 2.0.0 / TypeScript
+- **Task:** Build Tier 1-only protected-resource metadata without advertising unimplemented capabilities
+- **Expected behavior:** Use the metadata builder with a client_credentials-only authorization server.
+- **Actual behavior:** Type checking reported TS2741 because the builder's OAuthMetadata input requires authorization_endpoint, which this service intentionally does not implement.
+- **Severity:** Low
+- **Workaround:** Return the three-field resource document checked against the exported OAuthProtectedResourceMetadata type.
+- **Suggested improvement:** Permit token-only authorization-server metadata for client_credentials deployments without requiring a fictitious authorization endpoint.

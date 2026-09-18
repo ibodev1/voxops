@@ -21,6 +21,11 @@ export class VoxOpsDevStack extends Stack {
     super(scope, id, props);
     const root = fileURLToPath(new URL("../../", import.meta.url));
     const secret = Secret.fromSecretNameV2(this, "GitHubAppSecret", "voxops/dev/github-app");
+    const serviceSecret = Secret.fromSecretNameV2(
+      this,
+      "AlexaServiceAuthSecret",
+      "voxops/dev/alexa-service-auth",
+    );
     const logs = new LogGroup(this, "RuntimeLogs", {
       retention: RetentionDays.ONE_WEEK,
       removalPolicy: RemovalPolicy.DESTROY,
@@ -33,7 +38,7 @@ export class VoxOpsDevStack extends Stack {
       new PolicyStatement({
         actions: ["secretsmanager:GetSecretValue"],
         // Secrets Manager adds exactly six random characters to this named secret's ARN.
-        resources: [`${secret.secretArn}-??????`],
+        resources: [`${secret.secretArn}-??????`, `${serviceSecret.secretArn}-??????`],
       }),
     );
     const runtime = new NodejsFunction(this, "Runtime", {
@@ -47,7 +52,10 @@ export class VoxOpsDevStack extends Stack {
       timeout: Duration.seconds(10),
       role,
       logGroup: logs,
-      environment: { VOXOPS_GITHUB_SECRET_ID: secret.secretName },
+      environment: {
+        VOXOPS_GITHUB_SECRET_ID: secret.secretName,
+        VOXOPS_ALEXA_AUTH_SECRET_ID: serviceSecret.secretName,
+      },
       bundling: {
         target: "node24",
         format: OutputFormat.CJS,
@@ -62,14 +70,24 @@ export class VoxOpsDevStack extends Stack {
     });
     // No default integration: only explicitly added routes may invoke the runtime.
     const api = new HttpApi(this, "HealthApi", { createDefaultStage: false });
+    const integration = new HttpLambdaIntegration("HealthIntegration", runtime, {
+      payloadFormatVersion: PayloadFormatVersion.VERSION_2_0,
+      scopePermissionToRoute: true,
+    });
     api.addRoutes({
       path: "/health",
       methods: [HttpMethod.GET],
-      integration: new HttpLambdaIntegration("HealthIntegration", runtime, {
-        payloadFormatVersion: PayloadFormatVersion.VERSION_2_0,
-        scopePermissionToRoute: true,
-      }),
+      integration,
     });
+    for (const path of [
+      "/.well-known/oauth-authorization-server",
+      "/.well-known/oauth-protected-resource",
+    ]) {
+      api.addRoutes({ path, methods: [HttpMethod.GET], integration });
+    }
+    for (const path of ["/oauth/token", "/mcp"]) {
+      api.addRoutes({ path, methods: [HttpMethod.POST], integration });
+    }
     api.addStage("DefaultStage", {
       stageName: "$default",
       autoDeploy: true,
@@ -95,5 +113,6 @@ export class VoxOpsDevStack extends Stack {
     new CfnOutput(this, "ApiEndpoint", { value: api.apiEndpoint });
     new CfnOutput(this, "RuntimeLogGroupName", { value: logs.logGroupName });
     new CfnOutput(this, "ApiAccessLogGroupName", { value: accessLogs.logGroupName });
+    new CfnOutput(this, "AlexaServiceAuthSecretName", { value: serviceSecret.secretName });
   }
 }

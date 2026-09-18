@@ -13,7 +13,7 @@ try {
     process.env,
     fileURLToPath(new URL("../../../", import.meta.url)),
   );
-  const app = createApp(github);
+  const app = createApp(github, { runtime: "local", environment: process.env });
   serve({ fetch: app.fetch, hostname: "127.0.0.1", port });
   console.log(`VoxOps server listening on http://127.0.0.1:${port}`);
 } catch {

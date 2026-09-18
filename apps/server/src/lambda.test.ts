@@ -22,6 +22,7 @@ beforeEach(() => {
   vi.stubEnv("VOXOPS_GITHUB_SECRET_ID", "voxops/dev/github-app");
   vi.stubEnv("VOXOPS_GITHUB_APP_ID", "");
   vi.stubEnv("VOXOPS_GITHUB_PRIVATE_KEY_PATH", "");
+  vi.stubEnv("VOXOPS_ALEXA_AUTH_SECRET_ID", "");
   vi.spyOn(SecretsManagerClient.prototype, "send").mockRejectedValue(
     new Error("sensitive SDK error"),
   );
@@ -56,7 +57,7 @@ it("returns a sanitized HTTP error through the real Lambda adapter and retries f
 
 it("serves public health for an API Gateway v2 request without credential or network access", async () => {
   const { handler } = await import("./lambda.js");
-  const domainName = "example.execute-api.eu-central-1.amazonaws.com";
+  const domainName = "voxops.example";
   const response = await handler({
     ...health,
     routeKey: "GET /health",
@@ -76,13 +77,52 @@ it.each(["/mcp", "/api/repositories/ibodev1/voxops/status"])(
     const response = await handler({
       ...health,
       rawPath: path,
-      headers: { host: "example.execute-api.eu-central-1.amazonaws.com" },
+      headers: { host: "voxops.example" },
       requestContext: { ...health.requestContext, http: { ...health.requestContext.http, path } },
     });
     expect(response.statusCode).toBe(403);
     expect(SecretsManagerClient.prototype.send).not.toHaveBeenCalled();
   },
 );
+
+it("requires authentication in the real Lambda adapter even when configured as loopback", async () => {
+  const { handler } = await import("./lambda.js");
+  for (const domainName of ["voxops.example", "127.0.0.1"]) {
+    const response = await handler({
+      ...health,
+      rawPath: "/mcp",
+      routeKey: "POST /mcp",
+      headers: { host: domainName, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      requestContext: {
+        ...health.requestContext,
+        domainName,
+        http: { ...health.requestContext.http, method: "POST", path: "/mcp" },
+      },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({ error: "invalid_token" });
+    expect(response.headers).not.toHaveProperty("www-authenticate");
+  }
+  expect(SecretsManagerClient.prototype.send).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("derives metadata from API Gateway context and rejects a spoofed Host", async () => {
+  const { handler } = await import("./lambda.js");
+  for (const host of ["voxops.example", "127.0.0.1"]) {
+    const response = await handler({
+      ...health,
+      rawPath: "/.well-known/oauth-authorization-server",
+      headers: { host, "x-forwarded-host": "attacker.example", "x-forwarded-proto": "http" },
+      requestContext: { ...health.requestContext, domainName: "voxops.example" },
+    });
+    expect(response.statusCode).toBe(host === "voxops.example" ? 200 : 403);
+    if (response.statusCode === 200)
+      expect(JSON.parse(response.body).issuer).toBe("https://voxops.example");
+  }
+  expect(SecretsManagerClient.prototype.send).not.toHaveBeenCalled();
+});
 
 it("keeps MCP discovery credential-free and sanitizes credential failures for all tools", async () => {
   const app = createApp(createConfiguredGitHubClient(process.env, process.cwd()));

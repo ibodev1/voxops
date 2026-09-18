@@ -15,7 +15,7 @@ const template = Template.fromStack(stack);
 app.synth();
 afterAll(() => rmSync(outdir, { recursive: true, force: true }));
 
-it("synthesizes only the runtime and the health HTTP boundary", () => {
+it("synthesizes only the runtime and the service discovery HTTP boundary", () => {
   template.resourceCountIs("AWS::Lambda::Function", 1);
   template.resourceCountIs("AWS::Logs::LogGroup", 2);
   template.resourceCountIs("AWS::IAM::Role", 1);
@@ -31,22 +31,38 @@ it("synthesizes only the runtime and the health HTTP boundary", () => {
     "AWS::ApiGatewayV2::Api",
     "AWS::ApiGatewayV2::Integration",
     "AWS::ApiGatewayV2::Route",
+    "AWS::ApiGatewayV2::Route",
+    "AWS::ApiGatewayV2::Route",
+    "AWS::ApiGatewayV2::Route",
+    "AWS::ApiGatewayV2::Route",
     "AWS::ApiGatewayV2::Stage",
     "AWS::IAM::Policy",
     "AWS::IAM::Role",
     "AWS::Lambda::Function",
+    "AWS::Lambda::Permission",
+    "AWS::Lambda::Permission",
+    "AWS::Lambda::Permission",
+    "AWS::Lambda::Permission",
     "AWS::Lambda::Permission",
     "AWS::Logs::LogGroup",
     "AWS::Logs::LogGroup",
   ]);
 });
 
-it("routes only GET /health through one HTTP API to the existing Lambda", () => {
+const routeKeys = [
+  "GET /.well-known/oauth-authorization-server",
+  "GET /.well-known/oauth-protected-resource",
+  "GET /health",
+  "POST /mcp",
+  "POST /oauth/token",
+];
+
+it("routes exactly health, metadata, token and MCP POST to the existing Lambda", () => {
   const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
   const integration = Object.keys(template.findResources("AWS::ApiGatewayV2::Integration"))[0];
   const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
   template.resourceCountIs("AWS::ApiGatewayV2::Api", 1);
-  template.resourceCountIs("AWS::ApiGatewayV2::Route", 1);
+  template.resourceCountIs("AWS::ApiGatewayV2::Route", 5);
   template.resourceCountIs("AWS::ApiGatewayV2::Integration", 1);
   template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
     ProtocolType: "HTTP",
@@ -57,15 +73,21 @@ it("routes only GET /health through one HTTP API to the existing Lambda", () => 
     Body: Match.absent(),
     BodyS3Location: Match.absent(),
   });
-  template.hasResourceProperties(
-    "AWS::ApiGatewayV2::Route",
-    Match.objectEquals({
-      ApiId: { Ref: api },
-      RouteKey: "GET /health",
-      AuthorizationType: "NONE",
-      Target: { "Fn::Join": ["", ["integrations/", { Ref: integration }]] },
-    }),
-  );
+  expect(
+    Object.values(template.findResources("AWS::ApiGatewayV2::Route"))
+      .map((route) => route.Properties.RouteKey)
+      .sort(),
+  ).toEqual(routeKeys);
+  for (const routeKey of routeKeys)
+    template.hasResourceProperties(
+      "AWS::ApiGatewayV2::Route",
+      Match.objectEquals({
+        ApiId: { Ref: api },
+        RouteKey: routeKey,
+        AuthorizationType: "NONE",
+        Target: { "Fn::Join": ["", ["integrations/", { Ref: integration }]] },
+      }),
+    );
   template.hasResourceProperties(
     "AWS::ApiGatewayV2::Integration",
     Match.objectEquals({
@@ -75,37 +97,38 @@ it("routes only GET /health through one HTTP API to the existing Lambda", () => 
       PayloadFormatVersion: "2.0",
     }),
   );
-  // Exact route count/key forbids /mcp, repository routes, ANY and $default catch-alls.
+  // Exact route keys forbid repository routes, GET /mcp, ANY and $default catch-alls.
 });
 
-it("limits the new invocation grant to this API's health path", () => {
+it("limits invocation grants to this API's five explicit paths", () => {
   const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
   const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
-  template.resourceCountIs("AWS::Lambda::Permission", 1);
-  template.hasResourceProperties(
-    "AWS::Lambda::Permission",
-    Match.objectEquals({
-      Action: "lambda:InvokeFunction",
-      FunctionName: { "Fn::GetAtt": [runtime, "Arn"] },
-      Principal: "apigateway.amazonaws.com",
-      SourceArn: {
-        "Fn::Join": [
-          "",
-          [
-            "arn:",
-            { Ref: "AWS::Partition" },
-            ":execute-api:",
-            { Ref: "AWS::Region" },
-            ":",
-            { Ref: "AWS::AccountId" },
-            ":",
-            { Ref: api },
-            "/*/*/health",
+  template.resourceCountIs("AWS::Lambda::Permission", 5);
+  for (const routeKey of routeKeys)
+    template.hasResourceProperties(
+      "AWS::Lambda::Permission",
+      Match.objectEquals({
+        Action: "lambda:InvokeFunction",
+        FunctionName: { "Fn::GetAtt": [runtime, "Arn"] },
+        Principal: "apigateway.amazonaws.com",
+        SourceArn: {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              { Ref: "AWS::Partition" },
+              ":execute-api:",
+              { Ref: "AWS::Region" },
+              ":",
+              { Ref: "AWS::AccountId" },
+              ":",
+              { Ref: api },
+              `/*/*${routeKey.split(" ")[1]}`,
+            ],
           ],
-        ],
-      },
-    }),
-  );
+        },
+      }),
+    );
 });
 
 it("uses a throttled default stage and only minimal structured access logs", () => {
@@ -151,7 +174,10 @@ it("uses bounded runtime cost and environment settings", () => {
     MemorySize: 256,
     Timeout: 10,
     Environment: {
-      Variables: Match.objectEquals({ VOXOPS_GITHUB_SECRET_ID: "voxops/dev/github-app" }),
+      Variables: Match.objectEquals({
+        VOXOPS_GITHUB_SECRET_ID: "voxops/dev/github-app",
+        VOXOPS_ALEXA_AUTH_SECRET_ID: "voxops/dev/alexa-service-auth",
+      }),
     },
     VpcConfig: Match.absent(),
     ReservedConcurrentExecutions: Match.absent(),
@@ -165,7 +191,7 @@ it("uses bounded runtime cost and environment settings", () => {
   });
 });
 
-it("allows only log writes and reading exactly the named secret", () => {
+it("allows only log writes and reading exactly the two named secrets", () => {
   const logs = template.toJSON().Outputs.RuntimeLogGroupName.Value.Ref as string;
   const role = Object.keys(template.findResources("AWS::IAM::Role"))[0];
   template.hasResourceProperties("AWS::IAM::Role", {
@@ -195,7 +221,7 @@ it("allows only log writes and reading exactly the named secret", () => {
         {
           Effect: "Allow",
           Action: "secretsmanager:GetSecretValue",
-          Resource: {
+          Resource: ["github-app", "alexa-service-auth"].map((name) => ({
             "Fn::Join": [
               "",
               [
@@ -205,10 +231,10 @@ it("allows only log writes and reading exactly the named secret", () => {
                 { Ref: "AWS::Region" },
                 ":",
                 { Ref: "AWS::AccountId" },
-                ":secret:voxops/dev/github-app-??????",
+                `:secret:voxops/dev/${name}-??????`,
               ],
             ],
-          },
+          })),
         },
       ]),
     },
@@ -221,6 +247,7 @@ it("allows only log writes and reading exactly the named secret", () => {
 
 it("outputs identifiers only and packages only the bundled handler", () => {
   expect(Object.keys(template.toJSON().Outputs).sort()).toEqual([
+    "AlexaServiceAuthSecretName",
     "ApiAccessLogGroupName",
     "ApiEndpoint",
     "FunctionArn",
@@ -248,7 +275,7 @@ it("outputs identifiers only and packages only the bundled handler", () => {
   );
   expect(bundle).not.toContain("@hono/node-server");
   expect(JSON.stringify(template.toJSON())).not.toMatch(
-    /privateKey|PRIVATE KEY|VOXOPS_GITHUB_APP_ID|VOXOPS_GITHUB_PRIVATE_KEY_PATH/,
+    /privateKey|PRIVATE KEY|clientSecret|tokenSigningSecret|VOXOPS_GITHUB_APP_ID|VOXOPS_GITHUB_PRIVATE_KEY_PATH/,
   );
 });
 
@@ -271,7 +298,7 @@ it("executes the actual CommonJS bundle with the health fixture and networking d
     globalThis.fetch = deny;
     const { handler } = require(process.argv[1]);
     const event = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
-    const domainName = 'example.execute-api.eu-central-1.amazonaws.com';
+    const domainName = 'voxops.example';
     const remote = { ...event, routeKey: 'GET /health', headers: { host: domainName },
       requestContext: { ...event.requestContext, domainName, routeKey: 'GET /health' } };
     Promise.all([handler(event), handler(remote)]).then(results => {
