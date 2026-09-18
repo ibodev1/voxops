@@ -1,6 +1,6 @@
 # 0006: Alexa Tier 1 service authentication and discovery
 
-**Status:** Accepted; deployment and live interoperability checks remain manual.
+**Status:** SUPERSEDED by [ADR 0008](0008-public-read-only-demo.md). This records the historical private MCP design.
 
 Implement only client_credentials service authentication before user account linking. Alexa requires an exact resource parameter for Tier 1. Current Cognito documentation excludes resource binding for M2M client_credentials, so Cognito alone is not selected for this contract. See the [official-source research note](../alexa-auth-research.md). This decision does not select a Tier 2 identity provider.
 

@@ -3,14 +3,11 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@aws-sdk/client-secrets-manager": "3.1134.0",
     "@hono/node-server": "2.1.1",
     "@modelcontextprotocol/hono": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "@voxops/contracts": "workspace:*",
     "@voxops/github": "workspace:*",
-    "hono": "4.13.8",
-    "jose": "6.2.12",
-    "zod": "4.6.5"
+    "hono": "4.13.8"
   }
 }

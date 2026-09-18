@@ -1,6 +1,6 @@
 # 0004: AWS Lambda runtime
 
-**Status:** Accepted
+**Status:** SUPERSEDED by [ADR 0008](0008-public-read-only-demo.md). Lambda remains in use; secret-based access does not.
 
 Milestone 5A adds one TypeScript CDK v2 development stack and a Node.js 24 Lambda using Hono's official AWS adapter. Local and Lambda entrypoints share `createApp`, the four read-only MCP tools, and GitHub operations. Lambda provides low idle compute cost and an AWS-native hackathon deployment. ARM64 suits the JavaScript-only bundle; use 256 MB, a 10-second timeout, no VPC or preallocated concurrency, and an explicit log group with seven-day retention. Local esbuild produces a single CommonJS bundle including the pinned Secrets Manager SDK.
 

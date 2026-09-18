@@ -58,7 +58,7 @@ function toolFailure(error: unknown, fallback = "Repository data is unavailable.
     error instanceof GitHubRepositoryError
       ? {
           not_found: "Repository not found or inaccessible.",
-          authentication: "GitHub App authentication failed.",
+          not_allowed: "Repository is not on the public allowlist.",
           rate_limited: "GitHub rate limit reached. Try again later.",
           upstream: "GitHub is unavailable.",
         }[error.kind]
@@ -74,7 +74,7 @@ export function createMcpServer(github: GitHubRepositoryClient): McpServer {
     {
       title: "Get repository status",
       description:
-        "Get metadata, default branch, latest commit, and repository state for one GitHub repository accessible to VoxOps.",
+        "Get metadata, default branch, latest commit, and repository state for an allowlisted public GitHub repository.",
       inputSchema: RepositoryRefSchema,
       outputSchema: RepositoryStatusSchema,
       annotations: { readOnlyHint: true, destructiveHint: false },

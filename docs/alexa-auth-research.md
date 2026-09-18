@@ -1,5 +1,7 @@
 # Alexa+ MCP authentication requirements
 
+**Historical Milestones 5C–5D research; the active public demo decision is [ADR 0008](decisions/0008-public-read-only-demo.md).** Account linking is optional for user-independent tools according to the [account-linking guide](https://developer.amazon.com/docs/alexaplus/add-ons/mcp-toolkit-account-linking.html), and Tier 1 is described for private servers in the [authentication guide](https://developer.amazon.com/docs/alexaplus/add-ons/mcp-toolkit-authentication.html). The authentication details below are retained as engineering history and are not active VoxOps behavior.
+
 Rechecked against official documentation on 2026-09-18. The developer reports Milestone 5C live and verified with Tier 1 authentication and discovery. Milestone 5D is **BLOCKED**: the [compatibility report](alexa-tier2-compatibility.md) distinguishes Cognito's supported user OAuth features from unresolved metadata discovery and issuer composition. Tier 2 and actual Add-on interoperability are unimplemented and untested.
 
 ## User account linking

@@ -1,6 +1,6 @@
 # 0003: MCP Streamable HTTP
 
-**Status:** Accepted
+**Status:** SUPERSEDED by [ADR 0008](0008-public-read-only-demo.md). MCP Streamable HTTP remains in use; the private GitHub and local-only assumptions below do not.
 
 Use the official MCP TypeScript SDK v2 with a stateless Streamable HTTP endpoint at `/mcp`. The Hono adapter provides localhost Host and Origin validation, while `createMcpHandler` creates a fresh server for each request. The existing GitHub client remains shared so its installation token cache can be reused.
 

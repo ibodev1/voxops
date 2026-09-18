@@ -1,19 +1,19 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
-const usePrivate = Boolean(
-  process.env.VOXOPS_GITHUB_APP_ID && process.env.VOXOPS_GITHUB_PRIVATE_KEY_PATH,
-);
-const ref = usePrivate
-  ? { owner: "ibodev1", repo: "voxops" }
-  : { owner: "modelcontextprotocol", repo: "typescript-sdk" };
+const [owner, repo] = (process.env.VOXOPS_PUBLIC_REPOSITORIES ?? "ibodev1/voxops")
+  .split(",")[0]!
+  .split("/");
+if (!owner || !repo) throw new Error("Set VOXOPS_PUBLIC_REPOSITORIES to owner/repo");
+const ref = { owner, repo };
 const port = process.env.PORT ?? "3000";
+const url = process.env.VOXOPS_MCP_URL ?? `http://127.0.0.1:${port}/mcp`;
 const client = new Client(
   { name: "voxops-smoke", version: "0.1.0" },
   { versionNegotiation: { mode: "auto" } },
 );
 
 try {
-  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+  await client.connect(new StreamableHTTPClientTransport(new URL(url)));
   if (client.getServerVersion()?.name !== "voxops") throw new Error("Unexpected MCP server");
 
   const tools = (await client.listTools()).tools.map((tool) => tool.name);
@@ -43,7 +43,7 @@ try {
     !("latestCommit" in status) ||
     status.fullName !== `${ref.owner}/${ref.repo}` ||
     typeof status.defaultBranch !== "string" ||
-    typeof status.private !== "boolean" ||
+    status.private !== false ||
     typeof status.latestCommit !== "object"
   ) {
     throw new Error("Repository status result is incomplete");
@@ -73,12 +73,24 @@ try {
     counts.push(`${name}: ${items.length}`);
   }
 
-  console.log(
-    `MCP smoke passed for ${status.fullName} (${status.private ? "private" : "public"}).`,
-  );
+  const denied = await client.callTool({
+    name: "get_repository_status",
+    arguments: { owner: "voxops-not-allowlisted", repo: "blocked" },
+  });
+  if (
+    denied.isError !== true ||
+    denied.content[0]?.type !== "text" ||
+    denied.content[0].text !== "Repository is not on the public allowlist."
+  ) {
+    throw new Error("Allowlist rejection failed");
+  }
+
+  console.log(`MCP smoke passed for ${status.fullName} (public).`);
   console.log(counts.join(", "));
 } catch {
-  console.error("MCP smoke failed. Check the local server and GitHub App configuration.");
+  console.error(
+    "MCP smoke failed. Check the endpoint, public repository allowlist, and anonymous GitHub rate limit.",
+  );
   process.exitCode = 1;
 } finally {
   await client.close();

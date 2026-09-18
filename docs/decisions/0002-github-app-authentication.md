@@ -1,6 +1,6 @@
 # 0002: GitHub App authentication
 
-**Status:** Accepted
+**Status:** SUPERSEDED by [ADR 0008](0008-public-read-only-demo.md).
 
 Use a GitHub App instead of personal access tokens. Installation scope, least privilege, and short-lived tokens suit an application used with selected repositories. Milestone 4 adds read-only Issues, Pull requests, and Actions permissions to the original read-only Metadata and Contents permissions. No write or organization permissions are requested.
 

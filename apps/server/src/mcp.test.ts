@@ -16,13 +16,13 @@ const listWorkflowRuns = vi.fn<GitHubRepositoryClient["listWorkflowRuns"]>();
 const app = createApp({ getRepositoryStatus, listOpenIssues, listPullRequests, listWorkflowRuns });
 const status = {
   owner: "example",
-  name: "private",
-  fullName: "example/private",
+  name: "public",
+  fullName: "example/public",
   description: null,
   defaultBranch: "main",
-  private: true,
+  private: false,
   archived: false,
-  url: "https://github.com/example/private",
+  url: "https://github.com/example/public",
   pushedAt: "2026-09-17T00:00:00Z",
   latestCommit: {
     sha: "a".repeat(40),
@@ -32,13 +32,13 @@ const status = {
   },
 };
 const issues = {
-  repository: "example/private",
+  repository: "example/public",
   issues: [
     {
       number: 12,
       title: "Fix CI",
       state: "open" as const,
-      url: "https://github.com/example/private/issues/12",
+      url: "https://github.com/example/public/issues/12",
       authorLogin: "author",
       labels: ["bug"],
       createdAt: "2026-09-17T00:00:00Z",
@@ -47,12 +47,12 @@ const issues = {
   ],
 };
 const pullRequests = {
-  repository: "example/private",
+  repository: "example/public",
   pullRequests: [
     {
       number: 7,
       title: "Improve tests",
-      url: "https://github.com/example/private/pull/7",
+      url: "https://github.com/example/public/pull/7",
       authorLogin: "author",
       draft: true,
       sourceBranch: "tests",
@@ -63,7 +63,7 @@ const pullRequests = {
   ],
 };
 const workflowRuns = {
-  repository: "example/private",
+  repository: "example/public",
   workflowRuns: [
     {
       id: 42,
@@ -73,7 +73,7 @@ const workflowRuns = {
       conclusion: "success",
       branch: "main",
       commitSha: "a".repeat(40),
-      url: "https://github.com/example/private/actions/runs/42",
+      url: "https://github.com/example/public/actions/runs/42",
       createdAt: "2026-09-17T00:00:00Z",
       updatedAt: "2026-09-17T01:00:00Z",
     },
@@ -117,15 +117,15 @@ describe("MCP Streamable HTTP endpoint", () => {
     expect(tools.every((tool) => tool.annotations?.readOnlyHint)).toBe(true);
   });
 
-  it("returns private repository status as text and structured content", async () => {
+  it("returns public repository status as text and structured content", async () => {
     const result = await client.callTool({
       name: "get_repository_status",
-      arguments: { owner: "example", repo: "private" },
+      arguments: { owner: "example", repo: "public" },
     });
     expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toEqual(status);
     expect(result.content).toEqual([{ type: "text", text: formatRepositoryStatus(status) }]);
-    expect(getRepositoryStatus).toHaveBeenCalledWith({ owner: "example", repo: "private" });
+    expect(getRepositoryStatus).toHaveBeenCalledWith({ owner: "example", repo: "public" });
   });
 
   it.each([
@@ -137,7 +137,7 @@ describe("MCP Streamable HTTP endpoint", () => {
     async (name, output, text) => {
       const result = await client.callTool({
         name,
-        arguments: { owner: "example", repo: "private", limit: 3 },
+        arguments: { owner: "example", repo: "public", limit: 3 },
       });
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toEqual(output);
@@ -149,9 +149,9 @@ describe("MCP Streamable HTTP endpoint", () => {
     "rejects invalid %s input before GitHub",
     async (name) => {
       for (const args of [
-        { owner: "bad/owner", repo: "private", limit: 10 },
-        { owner: "example", repo: "private", limit: 0 },
-        { owner: "example", repo: "private", limit: 26 },
+        { owner: "bad/owner", repo: "public", limit: 10 },
+        { owner: "example", repo: "public", limit: 0 },
+        { owner: "example", repo: "public", limit: 26 },
       ]) {
         const result = await client.callTool({ name, arguments: args });
         expect(result.isError).toBe(true);
@@ -165,17 +165,19 @@ describe("MCP Streamable HTTP endpoint", () => {
   it.each(["list_open_issues", "list_pull_requests", "list_workflow_runs"])(
     "sanitizes %s GitHub failures",
     async (name) => {
-      const error = new GitHubRepositoryError("authentication");
+      const error = new GitHubRepositoryError("rate_limited");
       error.message = "secret-token /private/key.pem";
       listOpenIssues.mockRejectedValue(error);
       listPullRequests.mockRejectedValue(error);
       listWorkflowRuns.mockRejectedValue(error);
       const result = await client.callTool({
         name,
-        arguments: { owner: "example", repo: "private" },
+        arguments: { owner: "example", repo: "public" },
       });
       expect(result.isError).toBe(true);
-      expect(result.content).toEqual([{ type: "text", text: "GitHub App authentication failed." }]);
+      expect(result.content).toEqual([
+        { type: "text", text: "GitHub rate limit reached. Try again later." },
+      ]);
       expect(JSON.stringify(result)).not.toMatch(/secret-token|key\.pem/);
     },
   );
@@ -200,7 +202,7 @@ describe("MCP Streamable HTTP endpoint", () => {
       ]);
       const result = await legacy.callTool({
         name: "get_repository_status",
-        arguments: { owner: "example", repo: "private" },
+        arguments: { owner: "example", repo: "public" },
       });
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toEqual(status);
@@ -220,7 +222,7 @@ describe("MCP Streamable HTTP endpoint", () => {
 
   it.each([
     ["not_found", "Repository not found or inaccessible."],
-    ["authentication", "GitHub App authentication failed."],
+    ["not_allowed", "Repository is not on the public allowlist."],
     ["rate_limited", "GitHub rate limit reached. Try again later."],
     ["upstream", "GitHub is unavailable."],
   ] as const)("maps %s to a safe tool failure", async (kind, message) => {
@@ -229,7 +231,7 @@ describe("MCP Streamable HTTP endpoint", () => {
     getRepositoryStatus.mockRejectedValue(error);
     const result = await client.callTool({
       name: "get_repository_status",
-      arguments: { owner: "example", repo: "private" },
+      arguments: { owner: "example", repo: "public" },
     });
     expect(result.isError).toBe(true);
     expect(result.content).toEqual([{ type: "text", text: message }]);
@@ -240,7 +242,7 @@ describe("MCP Streamable HTTP endpoint", () => {
     getRepositoryStatus.mockRejectedValue(new Error("secret-token /sensitive/private-key.pem"));
     const result = await client.callTool({
       name: "get_repository_status",
-      arguments: { owner: "example", repo: "private" },
+      arguments: { owner: "example", repo: "public" },
     });
     expect(result.isError).toBe(true);
     expect(result.content).toEqual([{ type: "text", text: "Repository status is unavailable." }]);
@@ -260,11 +262,11 @@ describe("MCP Streamable HTTP endpoint", () => {
 it("formats nullable dates and multiline commit messages deterministically", () => {
   expect(formatRepositoryStatus({ ...status, pushedAt: null, archived: true })).toBe(
     [
-      "Repository example/private",
+      "Repository example/public",
       "Default branch: main",
       "Latest commit: aaaaaaa — Fix auth",
       "Last pushed: unknown",
-      "Private: yes",
+      "Private: no",
       "Archived: yes",
     ].join("\n"),
   );
@@ -272,12 +274,61 @@ it("formats nullable dates and multiline commit messages deterministically", () 
 
 it("formats empty developer context lists clearly", () => {
   expect(formatOpenIssues({ ...issues, issues: [] })).toBe(
-    "No open issues found for example/private.",
+    "No open issues found for example/public.",
   );
   expect(formatPullRequests({ ...pullRequests, pullRequests: [] })).toBe(
-    "No open pull requests found for example/private.",
+    "No open pull requests found for example/public.",
   );
   expect(formatWorkflowRuns({ ...workflowRuns, workflowRuns: [] })).toBe(
-    "No recent workflow runs found for example/private.",
+    "No recent workflow runs found for example/public.",
   );
+});
+
+it("runs all four tools through unauthenticated remote MCP", async () => {
+  const remote = createApp(
+    { getRepositoryStatus, listOpenIssues, listPullRequests, listWorkflowRuns },
+    "lambda",
+  );
+  const remoteClient = new Client(
+    { name: "voxops-remote-test", version: "0.1.0" },
+    { versionNegotiation: { mode: "auto" } },
+  );
+  try {
+    await remoteClient.connect(
+      new StreamableHTTPClientTransport(new URL("https://voxops.example/mcp"), {
+        fetch: async (url, init) => {
+          const request = new Request(url, init);
+          expect(request.headers.has("authorization")).toBe(false);
+          return remote.fetch(request);
+        },
+      }),
+    );
+    const { tools } = await remoteClient.listTools();
+    expect(tools).toHaveLength(4);
+    for (const tool of tools) {
+      const result = await remoteClient.callTool({
+        name: tool.name,
+        arguments: { owner: "example", repo: "public" },
+      });
+      expect(result.isError).not.toBe(true);
+    }
+    getRepositoryStatus.mockRejectedValue(new GitHubRepositoryError("not_allowed"));
+    const denied = await remoteClient.callTool({
+      name: "get_repository_status",
+      arguments: { owner: "other", repo: "repo" },
+    });
+    expect(denied.content).toEqual([
+      { type: "text", text: "Repository is not on the public allowlist." },
+    ]);
+    expect(denied.isError).toBe(true);
+    for (const path of [
+      "/oauth/token",
+      "/.well-known/oauth-protected-resource",
+      "/api/repositories/example/public/status",
+    ]) {
+      expect((await remote.request(path)).status).toBe(404);
+    }
+  } finally {
+    await remoteClient.close();
+  }
 });

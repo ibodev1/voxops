@@ -122,3 +122,14 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** High
 - **Workaround:** Stopped implementation under the requested compatibility gate and preserved 5C. Evidence and unresolved questions are in [the compatibility report](alexa-tier2-compatibility.md).
 - **Suggested improvement:** Publish an official Cognito/MCP configuration covering discovery, tier-specific issuer selection, client authentication, and resource handling during code exchange.
+
+## 2026-09-18: Lambda MCP smoke response format
+
+- **Date:** 2026-09-18
+- **Component/tool:** Hono Lambda adapter / MCP Streamable HTTP
+- **Task:** Test unauthenticated `tools/list` through an API Gateway payload-v2 event
+- **Expected behavior:** A directly JSON-parseable Lambda response body.
+- **Actual behavior:** The MCP handler returned an SSE event, and the Lambda adapter base64-encoded the body. The initial test failed while parsing the encoded text as JSON.
+- **Severity:** Low
+- **Workaround:** Decode the response when `isBase64Encoded` is true, then parse the SSE `data:` line in the deterministic fixture test.
+- **Suggested improvement:** Keep direct Lambda tests aware of response content type; use the SDK transport for full MCP exchange tests.

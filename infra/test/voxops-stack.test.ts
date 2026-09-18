@@ -15,7 +15,7 @@ const template = Template.fromStack(stack);
 app.synth();
 afterAll(() => rmSync(outdir, { recursive: true, force: true }));
 
-it("synthesizes only the runtime and the service discovery HTTP boundary", () => {
+it("synthesizes only the public MCP HTTP boundary", () => {
   template.resourceCountIs("AWS::Lambda::Function", 1);
   template.resourceCountIs("AWS::Logs::LogGroup", 2);
   template.resourceCountIs("AWS::IAM::Role", 1);
@@ -32,16 +32,10 @@ it("synthesizes only the runtime and the service discovery HTTP boundary", () =>
     "AWS::ApiGatewayV2::Integration",
     "AWS::ApiGatewayV2::Route",
     "AWS::ApiGatewayV2::Route",
-    "AWS::ApiGatewayV2::Route",
-    "AWS::ApiGatewayV2::Route",
-    "AWS::ApiGatewayV2::Route",
     "AWS::ApiGatewayV2::Stage",
     "AWS::IAM::Policy",
     "AWS::IAM::Role",
     "AWS::Lambda::Function",
-    "AWS::Lambda::Permission",
-    "AWS::Lambda::Permission",
-    "AWS::Lambda::Permission",
     "AWS::Lambda::Permission",
     "AWS::Lambda::Permission",
     "AWS::Logs::LogGroup",
@@ -49,20 +43,14 @@ it("synthesizes only the runtime and the service discovery HTTP boundary", () =>
   ]);
 });
 
-const routeKeys = [
-  "GET /.well-known/oauth-authorization-server",
-  "GET /.well-known/oauth-protected-resource",
-  "GET /health",
-  "POST /mcp",
-  "POST /oauth/token",
-];
+const routeKeys = ["GET /health", "POST /mcp"];
 
-it("routes exactly health, metadata, token and MCP POST to the existing Lambda", () => {
+it("routes only health and MCP POST to the existing Lambda", () => {
   const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
   const integration = Object.keys(template.findResources("AWS::ApiGatewayV2::Integration"))[0];
   const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
   template.resourceCountIs("AWS::ApiGatewayV2::Api", 1);
-  template.resourceCountIs("AWS::ApiGatewayV2::Route", 5);
+  template.resourceCountIs("AWS::ApiGatewayV2::Route", 2);
   template.resourceCountIs("AWS::ApiGatewayV2::Integration", 1);
   template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
     ProtocolType: "HTTP",
@@ -97,13 +85,13 @@ it("routes exactly health, metadata, token and MCP POST to the existing Lambda",
       PayloadFormatVersion: "2.0",
     }),
   );
-  // Exact route keys forbid repository routes, GET /mcp, ANY and $default catch-alls.
+  // Exact route keys forbid OAuth, repository routes, GET /mcp, ANY and $default catch-alls.
 });
 
-it("limits invocation grants to this API's five explicit paths", () => {
+it("limits invocation grants to this API's two explicit paths", () => {
   const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
   const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
-  template.resourceCountIs("AWS::Lambda::Permission", 5);
+  template.resourceCountIs("AWS::Lambda::Permission", 2);
   for (const routeKey of routeKeys)
     template.hasResourceProperties(
       "AWS::Lambda::Permission",
@@ -175,8 +163,7 @@ it("uses bounded runtime cost and environment settings", () => {
     Timeout: 10,
     Environment: {
       Variables: Match.objectEquals({
-        VOXOPS_GITHUB_SECRET_ID: "voxops/dev/github-app",
-        VOXOPS_ALEXA_AUTH_SECRET_ID: "voxops/dev/alexa-service-auth",
+        VOXOPS_PUBLIC_REPOSITORIES: "ibodev1/voxops",
       }),
     },
     VpcConfig: Match.absent(),
@@ -191,7 +178,7 @@ it("uses bounded runtime cost and environment settings", () => {
   });
 });
 
-it("allows only log writes and reading exactly the two named secrets", () => {
+it("allows only log writes", () => {
   const logs = template.toJSON().Outputs.RuntimeLogGroupName.Value.Ref as string;
   const role = Object.keys(template.findResources("AWS::IAM::Role"))[0];
   template.hasResourceProperties("AWS::IAM::Role", {
@@ -218,24 +205,6 @@ it("allows only log writes and reading exactly the two named secrets", () => {
           Action: ["logs:CreateLogStream", "logs:PutLogEvents"],
           Resource: { "Fn::GetAtt": [logs, "Arn"] },
         },
-        {
-          Effect: "Allow",
-          Action: "secretsmanager:GetSecretValue",
-          Resource: ["github-app", "alexa-service-auth"].map((name) => ({
-            "Fn::Join": [
-              "",
-              [
-                "arn:",
-                { Ref: "AWS::Partition" },
-                ":secretsmanager:",
-                { Ref: "AWS::Region" },
-                ":",
-                { Ref: "AWS::AccountId" },
-                `:secret:voxops/dev/${name}-??????`,
-              ],
-            ],
-          })),
-        },
       ]),
     },
   });
@@ -247,12 +216,10 @@ it("allows only log writes and reading exactly the two named secrets", () => {
 
 it("outputs identifiers only and packages only the bundled handler", () => {
   expect(Object.keys(template.toJSON().Outputs).sort()).toEqual([
-    "AlexaServiceAuthSecretName",
     "ApiAccessLogGroupName",
     "ApiEndpoint",
     "FunctionArn",
     "FunctionName",
-    "GitHubAppSecretName",
     "RuntimeLogGroupName",
   ]);
   const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
@@ -274,6 +241,9 @@ it("outputs identifiers only and packages only the bundled handler", () => {
     false,
   );
   expect(bundle).not.toContain("@hono/node-server");
+  expect(bundle).not.toContain("secretsmanager:GetSecretValue");
+  expect(bundle).not.toContain("VOXOPS_GITHUB_SECRET_ID");
+  expect(bundle).not.toContain("VOXOPS_ALEXA_AUTH_SECRET_ID");
   expect(JSON.stringify(template.toJSON())).not.toMatch(
     /privateKey|PRIVATE KEY|clientSecret|tokenSigningSecret|VOXOPS_GITHUB_APP_ID|VOXOPS_GITHUB_PRIVATE_KEY_PATH/,
   );
@@ -314,7 +284,7 @@ it("executes the actual CommonJS bundle with the health fixture and networking d
     ],
     {
       encoding: "utf8",
-      env: { VOXOPS_GITHUB_SECRET_ID: "voxops/dev/github-app" },
+      env: { ...process.env, VOXOPS_PUBLIC_REPOSITORIES: "ibodev1/voxops" },
       timeout: 10_000,
     },
   );

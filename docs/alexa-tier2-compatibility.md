@@ -1,5 +1,7 @@
 # Alexa Tier 2 compatibility gate: BLOCKED
 
+**Historical Milestone 5D investigation; the active public demo decision is [ADR 0008](decisions/0008-public-read-only-demo.md).** Tier 2 remains unimplemented and is outside current hackathon scope.
+
 Verified against current official documentation on 2026-09-18. The developer reports 5C live and verified. This is a documentation-based compatibility decision, not a failed live Cognito/Alexa experiment. No AWS resources, users, credentials, or Add-on configuration were accessed or changed for this review.
 
 ## Incompatible requirement: discovery and issuer composition

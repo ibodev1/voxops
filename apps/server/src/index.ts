@@ -1,6 +1,5 @@
 import { serve } from "@hono/node-server";
-import { fileURLToPath } from "node:url";
-import { createConfiguredGitHubClient } from "./runtime.js";
+import { createGitHubRepositoryClient } from "@voxops/github";
 import { createApp } from "./app.js";
 
 const port = process.env.PORT === undefined ? 3000 : Number(process.env.PORT);
@@ -9,11 +8,8 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 }
 
 try {
-  const github = createConfiguredGitHubClient(
-    process.env,
-    fileURLToPath(new URL("../../../", import.meta.url)),
-  );
-  const app = createApp(github, { runtime: "local", environment: process.env });
+  const github = createGitHubRepositoryClient(process.env.VOXOPS_PUBLIC_REPOSITORIES ?? "");
+  const app = createApp(github);
   serve({ fetch: app.fetch, hostname: "127.0.0.1", port });
   console.log(`VoxOps server listening on http://127.0.0.1:${port}`);
 } catch {

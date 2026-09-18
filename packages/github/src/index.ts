@@ -1,6 +1,4 @@
 import { Octokit } from "@octokit/rest";
-import { createAppAuth } from "@octokit/auth-app";
-import type { GitHubAppConfig } from "./config.js";
 import {
   RepositoryRefSchema,
   RepositoryStatusSchema,
@@ -16,17 +14,7 @@ import {
   type WorkflowRunsResult,
 } from "@voxops/contracts";
 
-export {
-  loadGitHubAppConfig,
-  GitHubAppConfigurationError,
-  type GitHubAppConfig,
-} from "./config.js";
-
-export type GitHubRepositoryErrorKind =
-  | "not_found"
-  | "authentication"
-  | "rate_limited"
-  | "upstream";
+export type GitHubRepositoryErrorKind = "not_found" | "not_allowed" | "rate_limited" | "upstream";
 
 export interface GitHubRepositoryClient {
   getRepositoryStatus(input: RepositoryRef): Promise<RepositoryStatus>;
@@ -41,52 +29,44 @@ const clientOptions = {
   log: { debug() {}, info() {}, warn() {}, error() {} },
 };
 
-export function createGitHubRepositoryClient(config?: GitHubAppConfig): GitHubRepositoryClient {
+export function createGitHubRepositoryClient(allowlist: string): GitHubRepositoryClient {
   const anonymous = new Octokit(clientOptions);
-  const appAuth = config ? createAppAuth({ ...config, log: clientOptions.log }) : undefined;
-  const appOctokit = appAuth
-    ? new Octokit({ ...clientOptions, authStrategy: () => appAuth })
-    : undefined;
+  const allowed = new Set(
+    allowlist.split(",").map((entry) => {
+      const [owner, repo, extra] = entry.trim().split("/");
+      if (extra !== undefined || !RepositoryRefSchema.safeParse({ owner, repo }).success) {
+        throw new Error("VOXOPS_PUBLIC_REPOSITORIES must contain owner/repo entries");
+      }
+      return `${owner}/${repo}`.toLowerCase();
+    }),
+  );
 
-  async function repositoryClient(
-    ref: RepositoryRef,
-  ): Promise<{ octokit: Octokit; allowPrivate: boolean }> {
-    if (!appOctokit || !appAuth) return { octokit: anonymous, allowPrivate: false };
-    const installation = await appOctokit.rest.apps
-      .getRepoInstallation(ref)
-      .catch((error: unknown) => {
-        // An absent installation also covers private repositories this app cannot see.
-        if (error instanceof Error && "status" in error && error.status === 404) return undefined;
-        throw mapGitHubError(error, true);
-      });
-    if (!installation) return { octokit: anonymous, allowPrivate: false };
-
-    try {
-      const octokit = await appAuth({
-        type: "installation",
-        installationId: installation.data.id,
-        factory: (options) =>
-          new Octokit({ ...clientOptions, authStrategy: createAppAuth, auth: options }),
-      });
-      return { octokit, allowPrivate: true };
-    } catch (error) {
-      throw mapGitHubError(error, true);
+  async function publicRepository(ref: RepositoryRef) {
+    if (!allowed.has(`${ref.owner}/${ref.repo}`.toLowerCase())) {
+      throw new GitHubRepositoryError("not_allowed");
     }
+    const { data } = await anonymous.rest.repos.get(ref).catch((error: unknown) => {
+      throw mapGitHubError(error);
+    });
+    if (data.private !== false || (data.visibility && data.visibility !== "public")) {
+      throw new GitHubRepositoryError("not_found");
+    }
+    return data;
   }
 
   return {
     async getRepositoryStatus(input: RepositoryRef): Promise<RepositoryStatus> {
       const ref = RepositoryRefSchema.parse(input);
-      const { octokit, allowPrivate } = await repositoryClient(ref);
-      return readRepositoryStatus(octokit, ref, allowPrivate);
+      const repository = await publicRepository(ref);
+      return readRepositoryStatus(anonymous, ref, repository);
     },
     async listOpenIssues(input: RepositoryListInput): Promise<OpenIssuesResult> {
       const { owner, repo, limit } = RepositoryListInputSchema.parse(input);
-      const { octokit } = await repositoryClient({ owner, repo });
-      const { data } = await octokit.rest.issues
+      await publicRepository({ owner, repo });
+      const { data } = await anonymous.rest.issues
         .listForRepo({ owner, repo, state: "open", per_page: 100 })
         .catch((error: unknown) => {
-          throw mapGitHubError(error, true);
+          throw mapGitHubError(error);
         });
       try {
         return OpenIssuesResultSchema.parse({
@@ -113,11 +93,11 @@ export function createGitHubRepositoryClient(config?: GitHubAppConfig): GitHubRe
     },
     async listPullRequests(input: RepositoryListInput): Promise<PullRequestsResult> {
       const { owner, repo, limit } = RepositoryListInputSchema.parse(input);
-      const { octokit } = await repositoryClient({ owner, repo });
-      const { data } = await octokit.rest.pulls
+      await publicRepository({ owner, repo });
+      const { data } = await anonymous.rest.pulls
         .list({ owner, repo, state: "open", per_page: limit })
         .catch((error: unknown) => {
-          throw mapGitHubError(error, true);
+          throw mapGitHubError(error);
         });
       try {
         return PullRequestsResultSchema.parse({
@@ -143,11 +123,11 @@ export function createGitHubRepositoryClient(config?: GitHubAppConfig): GitHubRe
     },
     async listWorkflowRuns(input: RepositoryListInput): Promise<WorkflowRunsResult> {
       const { owner, repo, limit } = RepositoryListInputSchema.parse(input);
-      const { octokit } = await repositoryClient({ owner, repo });
-      const { data } = await octokit.rest.actions
+      await publicRepository({ owner, repo });
+      const { data } = await anonymous.rest.actions
         .listWorkflowRunsForRepo({ owner, repo, per_page: limit })
         .catch((error: unknown) => {
-          throw mapGitHubError(error, true);
+          throw mapGitHubError(error);
         });
       try {
         return WorkflowRunsResultSchema.parse({
@@ -179,10 +159,10 @@ export class GitHubRepositoryError extends Error {
   }
 }
 
-function mapGitHubError(error: unknown, repositoryLookup: boolean): GitHubRepositoryError {
+function mapGitHubError(error: unknown): GitHubRepositoryError {
   const status = error instanceof Error && "status" in error ? error.status : undefined;
 
-  if (repositoryLookup && status === 404) {
+  if (status === 404) {
     return new GitHubRepositoryError("not_found");
   }
 
@@ -193,7 +173,6 @@ function mapGitHubError(error: unknown, repositoryLookup: boolean): GitHubReposi
     return new GitHubRepositoryError("rate_limited");
   }
 
-  if (status === 401) return new GitHubRepositoryError("authentication");
   if (status === 403) return new GitHubRepositoryError("not_found");
 
   return new GitHubRepositoryError("upstream");
@@ -202,23 +181,12 @@ function mapGitHubError(error: unknown, repositoryLookup: boolean): GitHubReposi
 async function readRepositoryStatus(
   octokit: Octokit,
   { owner, repo }: RepositoryRef,
-  allowPrivate: boolean,
+  repository: Awaited<ReturnType<Octokit["rest"]["repos"]["get"]>>["data"],
 ): Promise<RepositoryStatus> {
-  const { data: repository } = await octokit.rest.repos
-    .get({ owner, repo })
-    .catch((error: unknown) => {
-      throw mapGitHubError(error, true);
-    });
-
-  if (repository.private && !allowPrivate) {
-    throw new GitHubRepositoryError("not_found");
-  }
-
   const { data: commit } = await octokit.rest.repos
     .getCommit({ owner, repo, ref: repository.default_branch })
     .catch((error: unknown) => {
-      // A missing private commit can also mean installation access was revoked.
-      throw mapGitHubError(error, allowPrivate);
+      throw mapGitHubError(error);
     });
 
   try {
