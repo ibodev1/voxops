@@ -111,3 +111,14 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Low
 - **Workaround:** Return the three-field resource document checked against the exported OAuthProtectedResourceMetadata type.
 - **Suggested improvement:** Permit token-only authorization-server metadata for client_credentials deployments without requiring a fictitious authorization endpoint.
+
+## 2026-09-18: Tier 2 discovery and issuer compatibility gate
+
+- **Date:** 2026-09-18
+- **Component/tool:** Official Alexa MCP and Cognito documentation
+- **Task:** Verify a small Cognito Tier 2 addition while preserving the VoxOps Tier 1 issuer
+- **Expected behavior:** Find a documented discovery configuration supporting both issuers without proxying codes or inventing metadata.
+- **Actual behavior:** Alexa specifies OAuth authorization-server metadata and selects only the first advertised server; Cognito documents OIDC discovery. The reviewed sources did not establish the required discovery fallback or independent Tier 1 issuer selection. CLI configuration examples also differ between the account-linking guide and CLI reference. These are documentation findings, not observed deployment failures.
+- **Severity:** High
+- **Workaround:** Stopped implementation under the requested compatibility gate and preserved 5C. Evidence and unresolved questions are in [the compatibility report](alexa-tier2-compatibility.md).
+- **Suggested improvement:** Publish an official Cognito/MCP configuration covering discovery, tier-specific issuer selection, client authentication, and resource handling during code exchange.

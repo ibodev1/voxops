@@ -1,6 +1,8 @@
 # AWS development: Milestones 5A–5C
 
-The developer reports Milestones 5A/5B live in `eu-central-1`: Lambda health, GitHub App secret loading, private repository reads, explicit logs, and the health-only HTTP API work. Milestone 5C adds Tier 1 service authentication and remote MCP discovery, verified locally. Codex has not created the service secret, deployed, invoked AWS, or configured an Alexa Add-on. Run the manual steps below after review. User-specific tool execution and Tier 2 remain deferred.
+The developer reports Milestones 5A–5C live and verified in `eu-central-1`: Lambda/GitHub access, logging, Tier 1 token issuance, MCP discovery, and HTTP 403 for service-token tool calls work. Codex did not perform those deployments. The steps below remain the 5A–5C setup/rotation runbook; do not recreate existing resources or rotate credentials merely to follow it.
+
+Milestone 5D is [blocked at the Tier 2 compatibility gate](alexa-tier2-compatibility.md). It changes documentation only. There is no new stack deployment, Cognito setup, demo user, callback configuration, or user-token smoke procedure to execute. Resolve the documented discovery/issuer questions before proceeding to account linking.
 
 ## Runtime and local checks
 

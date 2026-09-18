@@ -1,6 +1,6 @@
 # Alexa+ MCP authentication requirements
 
-Checked against official documentation on 2026-09-17. Milestone 5B is live with health only. Milestone 5C implements Tier 1 service authentication and MCP discovery, pending manual deployment. This is not a claim of full Alexa compatibility; Tier 2 and actual Add-on interoperability are untested.
+Rechecked against official documentation on 2026-09-18. The developer reports Milestone 5C live and verified with Tier 1 authentication and discovery. Milestone 5D is **BLOCKED**: the [compatibility report](alexa-tier2-compatibility.md) distinguishes Cognito's supported user OAuth features from unresolved metadata discovery and issuer composition. Tier 2 and actual Add-on interoperability are unimplemented and untested.
 
 ## User account linking
 
@@ -26,4 +26,4 @@ The [MCP SDK authorization guide](https://github.com/modelcontextprotocol/typesc
 
 [Cognito supports PKCE authorization-code flows](https://docs.aws.amazon.com/cognito/latest/developerguide/using-pkce-in-authorization-code.html), access/refresh tokens, custom scopes, and client_credentials. Its [resource-server documentation](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-define-resource-servers.html) describes user resource binding and explicitly excludes resource binding for client_credentials M2M grants. Alexa Tier 1 requires validation of resource, so Cognito alone is not assumed to satisfy that contract. No Cognito or proxy is added.
 
-Actual Alexa integration must still verify static registration, discovery and HTTP challenge behavior, exact URI handling, and Tier 1/Tier 2 composition. Tier 2 identity/provider selection, PKCE, refresh, consent, account linking, and repository authorization remain design work for 5D. Service discovery alone does not establish end-to-end Alexa compatibility.
+Actual Alexa integration must still verify static registration, discovery and HTTP challenge behavior, exact URI handling, and Tier 1/Tier 2 composition. The 5D gate stopped implementation before any Cognito resources or user authorization were added. Custom user scopes are documented by Alexa; the report does not treat literal `mcp:tools` as a proven requirement or confuse the Cognito M2M limitation with supported user resource binding. Service discovery alone does not establish end-to-end Alexa compatibility.
