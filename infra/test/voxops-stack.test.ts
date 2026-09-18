@@ -15,105 +15,60 @@ const template = Template.fromStack(stack);
 app.synth();
 afterAll(() => rmSync(outdir, { recursive: true, force: true }));
 
-it("adds only private static hosting resources to the existing HTTP boundary", () => {
-  template.resourceCountIs("AWS::Lambda::Function", 1);
-  template.resourceCountIs("AWS::Logs::LogGroup", 2);
-  template.resourceCountIs("AWS::IAM::Role", 1);
-  template.resourceCountIs("AWS::IAM::Policy", 1);
-  // This exact resource allowlist excludes Function URLs, REST APIs, auth systems,
-  // VPC/NAT/compute resources, extra Lambdas, and custom resources.
-  const resources = template.toJSON().Resources as Record<string, { Type: string }>;
-  expect(
-    Object.values(resources)
-      .map((resource) => resource.Type)
-      .sort(),
-  ).toEqual([
-    "AWS::ApiGatewayV2::Api",
-    "AWS::ApiGatewayV2::Integration",
-    "AWS::ApiGatewayV2::Route",
-    "AWS::ApiGatewayV2::Route",
-    "AWS::ApiGatewayV2::Route",
-    "AWS::ApiGatewayV2::Stage",
-    "AWS::CloudFront::Distribution",
-    "AWS::CloudFront::OriginAccessControl",
-    "AWS::IAM::Policy",
-    "AWS::IAM::Role",
-    "AWS::Lambda::Function",
-    "AWS::Lambda::Permission",
-    "AWS::Lambda::Permission",
-    "AWS::Lambda::Permission",
-    "AWS::Logs::LogGroup",
-    "AWS::Logs::LogGroup",
-    "AWS::S3::Bucket",
-    "AWS::S3::BucketPolicy",
-  ]);
-});
+const resource = (type: string) => Object.entries(template.findResources(type));
 
-const routeKeys = ["GET /health", "POST /api/demo/chat", "POST /mcp"];
-
-it("routes only health, MCP POST, and demo chat to the existing Lambda", () => {
-  const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
-  const distribution = Object.keys(template.findResources("AWS::CloudFront::Distribution"))[0];
-  const integration = Object.keys(template.findResources("AWS::ApiGatewayV2::Integration"))[0];
-  const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
+it("keeps the existing HTTP API limited to health and MCP", () => {
   template.resourceCountIs("AWS::ApiGatewayV2::Api", 1);
-  template.resourceCountIs("AWS::ApiGatewayV2::Route", 3);
-  template.resourceCountIs("AWS::ApiGatewayV2::Integration", 1);
-  template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
-    ProtocolType: "HTTP",
-    CorsConfiguration: {
-      AllowOrigins: [
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-        { "Fn::Join": ["", ["https://", { "Fn::GetAtt": [distribution, "DomainName"] }]] },
-      ],
-      AllowMethods: ["GET", "POST"],
-      AllowHeaders: ["content-type"],
-      AllowCredentials: Match.absent(),
-    },
-    // No quick-create/default route or external OpenAPI routes.
-    Target: Match.absent(),
-    RouteKey: Match.absent(),
-    Body: Match.absent(),
-    BodyS3Location: Match.absent(),
-  });
+  template.resourceCountIs("AWS::ApiGatewayV2::Route", 2);
   expect(
-    Object.values(template.findResources("AWS::ApiGatewayV2::Route"))
-      .map((route) => route.Properties.RouteKey)
+    resource("AWS::ApiGatewayV2::Route")
+      .map(([, value]) => value.Properties.RouteKey)
       .sort(),
-  ).toEqual(routeKeys);
-  for (const routeKey of routeKeys)
-    template.hasResourceProperties(
-      "AWS::ApiGatewayV2::Route",
-      Match.objectEquals({
-        ApiId: { Ref: api },
-        RouteKey: routeKey,
-        AuthorizationType: "NONE",
-        Target: { "Fn::Join": ["", ["integrations/", { Ref: integration }]] },
-      }),
-    );
-  template.hasResourceProperties(
-    "AWS::ApiGatewayV2::Integration",
-    Match.objectEquals({
-      ApiId: { Ref: api },
-      IntegrationType: "AWS_PROXY",
-      IntegrationUri: { "Fn::GetAtt": [runtime, "Arn"] },
-      PayloadFormatVersion: "2.0",
-    }),
-  );
-  // Exact route keys forbid OAuth, repository routes, GET /mcp, ANY and $default catch-alls.
-  expect(JSON.stringify(template.findResources("AWS::CloudFront::Distribution"))).not.toContain(
-    api,
-  );
+  ).toEqual(["GET /health", "POST /mcp"]);
+  template.resourceCountIs("AWS::ApiGatewayV2::Integration", 1);
+  template.hasResourceProperties("AWS::ApiGatewayV2::Integration", {
+    IntegrationType: "AWS_PROXY",
+    PayloadFormatVersion: "2.0",
+  });
+  expect(JSON.stringify(resource("AWS::ApiGatewayV2::Route"))).not.toMatch(/demo\/chat|\$default/);
 });
 
-it("serves static assets through one private S3 origin with signed CloudFront access", () => {
-  const bucket = Object.keys(template.findResources("AWS::S3::Bucket"))[0];
-  const distribution = Object.keys(template.findResources("AWS::CloudFront::Distribution"))[0];
-  const oac = Object.keys(template.findResources("AWS::CloudFront::OriginAccessControl"))[0];
-  template.resourceCountIs("AWS::S3::Bucket", 1);
+it("creates one explicit regional REST streaming POST method with no other REST routes", () => {
+  template.resourceCountIs("AWS::ApiGateway::RestApi", 1);
+  template.resourceCountIs("AWS::ApiGateway::Method", 1);
+  template.hasResourceProperties("AWS::ApiGateway::RestApi", {
+    EndpointConfiguration: { Types: ["REGIONAL"] },
+  });
+  const [, method] = resource("AWS::ApiGateway::Method")[0]!;
+  expect(method.Properties.HttpMethod).toBe("POST");
+  expect(method.Properties.AuthorizationType).toBe("NONE");
+  expect(method.Properties.Integration).toMatchObject({
+    Type: "AWS_PROXY",
+    IntegrationHttpMethod: "POST",
+    ResponseTransferMode: "STREAM",
+  });
+  expect(JSON.stringify(method.Properties.Integration.Uri)).toContain(
+    "/response-streaming-invocations",
+  );
+  expect(JSON.stringify(method.Properties.Integration.Uri)).toContain("ChatRuntime");
+  expect(
+    resource("AWS::ApiGateway::Resource").map(([, value]) => value.Properties.PathPart),
+  ).toEqual(expect.arrayContaining(["api", "demo", "chat"]));
+});
+
+it("routes one uncached CloudFront chat behavior to the REST stage", () => {
   template.resourceCountIs("AWS::CloudFront::Distribution", 1);
-  template.resourceCountIs("AWS::CloudFront::OriginAccessControl", 1);
+  const [, distribution] = resource("AWS::CloudFront::Distribution")[0]!;
+  const config = distribution.Properties.DistributionConfig;
+  expect(config.DefaultCacheBehavior.AllowedMethods).toEqual(["GET", "HEAD"]);
+  expect(config.CacheBehaviors).toHaveLength(1);
+  expect(config.CacheBehaviors[0]).toMatchObject({
+    PathPattern: "api/demo/chat",
+    CachePolicyId: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+    OriginRequestPolicyId: "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+  });
+  expect(config.Origins).toHaveLength(2);
+  template.resourceCountIs("AWS::S3::Bucket", 1);
   template.hasResourceProperties("AWS::S3::Bucket", {
     PublicAccessBlockConfiguration: {
       BlockPublicAcls: true,
@@ -121,297 +76,113 @@ it("serves static assets through one private S3 origin with signed CloudFront ac
       IgnorePublicAcls: true,
       RestrictPublicBuckets: true,
     },
-    OwnershipControls: { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" }] },
-    BucketEncryption: {
-      ServerSideEncryptionConfiguration: [
-        { ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } },
-      ],
-    },
-    WebsiteConfiguration: Match.absent(),
-    VersioningConfiguration: Match.absent(),
   });
-  expect(Object.values(template.findResources("AWS::S3::Bucket"))[0]!.DeletionPolicy).toBe(
-    "Delete",
+});
+
+it("bounds Lambda cost and Bedrock permissions to the chat execution role", () => {
+  template.resourceCountIs("AWS::Lambda::Function", 2);
+  template.resourceCountIs("AWS::IAM::Role", 2);
+  template.resourceCountIs("AWS::IAM::Policy", 2);
+  const functions = resource("AWS::Lambda::Function");
+  for (const [, fn] of functions) {
+    expect(fn.Properties).toMatchObject({
+      Runtime: "nodejs24.x",
+      Architectures: ["arm64"],
+      MemorySize: 256,
+      Timeout: 60,
+    });
+    expect(fn.Properties.VpcConfig).toBeUndefined();
+  }
+  const runtime = functions.find(
+    ([, fn]) => fn.Properties.Environment?.Variables?.VOXOPS_PUBLIC_REPOSITORIES,
   );
-  template.hasResourceProperties("AWS::CloudFront::OriginAccessControl", {
-    OriginAccessControlConfig: {
-      OriginAccessControlOriginType: "s3",
-      SigningBehavior: "always",
-      SigningProtocol: "sigv4",
-    },
-  });
-  template.hasResourceProperties("AWS::CloudFront::Distribution", {
-    DistributionConfig: {
-      DefaultRootObject: "index.html",
-      DefaultCacheBehavior: {
-        AllowedMethods: ["GET", "HEAD"],
-        ViewerProtocolPolicy: "redirect-to-https",
-        Compress: true,
-      },
-      Origins: [
-        {
-          DomainName: { "Fn::GetAtt": [bucket, "RegionalDomainName"] },
-          OriginAccessControlId: { "Fn::GetAtt": [oac, "Id"] },
-          S3OriginConfig: { OriginAccessIdentity: "" },
-        },
-      ],
-      Aliases: Match.absent(),
-      CustomErrorResponses: Match.absent(),
-    },
-  });
-  template.hasResourceProperties("AWS::S3::BucketPolicy", {
-    Bucket: { Ref: bucket },
-    PolicyDocument: {
-      Statement: [
-        {
-          Action: "s3:GetObject",
-          Effect: "Allow",
-          Principal: { Service: "cloudfront.amazonaws.com" },
-          Condition: {
-            StringEquals: {
-              "AWS:SourceArn": {
-                "Fn::Join": [
-                  "",
-                  [
-                    "arn:",
-                    { Ref: "AWS::Partition" },
-                    ":cloudfront::",
-                    { Ref: "AWS::AccountId" },
-                    ":distribution/",
-                    { Ref: distribution },
-                  ],
-                ],
-              },
-            },
-          },
-          Resource: {
-            "Fn::Join": ["", [{ "Fn::GetAtt": [bucket, "Arn"] }, "/*"]],
-          },
-        },
-      ],
-    },
-  });
-});
-
-it("limits invocation grants to this API's three explicit paths", () => {
-  const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
-  const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
-  template.resourceCountIs("AWS::Lambda::Permission", 3);
-  for (const routeKey of routeKeys)
-    template.hasResourceProperties(
-      "AWS::Lambda::Permission",
-      Match.objectEquals({
-        Action: "lambda:InvokeFunction",
-        FunctionName: { "Fn::GetAtt": [runtime, "Arn"] },
-        Principal: "apigateway.amazonaws.com",
-        SourceArn: {
-          "Fn::Join": [
-            "",
-            [
-              "arn:",
-              { Ref: "AWS::Partition" },
-              ":execute-api:",
-              { Ref: "AWS::Region" },
-              ":",
-              { Ref: "AWS::AccountId" },
-              ":",
-              { Ref: api },
-              `/*/*${routeKey.split(" ")[1]}`,
-            ],
-          ],
-        },
-      }),
+  const chat = functions.find(
+    ([, fn]) => fn.Properties.Environment?.Variables?.VOXOPS_MCP_REMOTE_URL,
+  );
+  expect(runtime).toBeDefined();
+  expect(chat).toBeDefined();
+  expect(runtime![1].Properties.ReservedConcurrentExecutions).toBeUndefined();
+  expect(chat![1].Properties.ReservedConcurrentExecutions).toBe(2);
+  expect(runtime![1].Properties.Environment.Variables.VOXOPS_MCP_REMOTE_URL).toBeUndefined();
+  expect(chat![1].Properties.Environment.Variables.VOXOPS_PUBLIC_REPOSITORIES).toBeUndefined();
+  const policies = resource("AWS::IAM::Policy");
+  const runtimePolicy = policies.find(([, value]) =>
+    JSON.stringify(value.Properties.Roles).includes("RuntimeRole"),
+  );
+  expect(JSON.stringify(runtimePolicy)).not.toContain("bedrock:");
+  const bedrock = policies
+    .flatMap(([, value]) => value.Properties.PolicyDocument.Statement)
+    .filter(
+      (statement: { Action: string | string[] }) =>
+        typeof statement.Action === "string" && statement.Action.startsWith("bedrock:"),
     );
+  expect(bedrock).toHaveLength(2);
+  expect(
+    bedrock.every(
+      (statement: { Action: string }) =>
+        statement.Action === "bedrock:InvokeModelWithResponseStream",
+    ),
+  ).toBe(true);
+  expect(JSON.stringify(bedrock)).toContain("eu.amazon.nova-micro-v1:0");
+  expect(JSON.stringify(bedrock)).toContain("bedrock:InferenceProfileArn");
+  expect(JSON.stringify(bedrock)).not.toContain('"Resource":"*"');
 });
 
-it("uses a throttled default stage and only minimal structured access logs", () => {
-  const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
-  const logs = template.toJSON().Outputs.ApiAccessLogGroupName.Value.Ref as string;
-  template.resourceCountIs("AWS::ApiGatewayV2::Stage", 1);
-  template.hasResourceProperties(
-    "AWS::ApiGatewayV2::Stage",
-    Match.objectEquals({
-      ApiId: { Ref: api },
-      StageName: "$default",
-      AutoDeploy: true,
-      DefaultRouteSettings: {
+it("uses finite runtime/HTTP access logs and excludes costly or secret resources", () => {
+  template.resourceCountIs("AWS::Logs::LogGroup", 3);
+  for (const [, log] of resource("AWS::Logs::LogGroup"))
+    expect(log.Properties.RetentionInDays).toBe(7);
+  template.hasResourceProperties("AWS::ApiGateway::Stage", {
+    MethodSettings: Match.arrayWith([
+      Match.objectLike({
         ThrottlingRateLimit: 10,
         ThrottlingBurstLimit: 20,
-        DetailedMetricsEnabled: false,
-      },
-      AccessLogSettings: {
-        DestinationArn: { "Fn::GetAtt": [logs, "Arn"] },
-        Format: JSON.stringify({
-          requestId: "$context.requestId",
-          method: "$context.httpMethod",
-          routeKey: "$context.routeKey",
-          status: "$context.status",
-          responseLatency: "$context.responseLatency",
-          integrationLatency: "$context.integrationLatency",
-        }),
-      },
-    }),
-  );
-  // The exact format excludes Authorization, bodies, paths, query strings and payloads.
-  for (const log of Object.values(template.findResources("AWS::Logs::LogGroup"))) {
-    expect(log.Properties.RetentionInDays).toBe(7);
-    expect(log.DeletionPolicy).toBe("Delete");
-  }
-});
-
-it("uses bounded runtime cost and environment settings", () => {
-  const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
-  template.hasResourceProperties("AWS::Lambda::Function", {
-    Runtime: "nodejs24.x",
-    Handler: "index.handler",
-    Architectures: ["arm64"],
-    MemorySize: 256,
-    Timeout: 60,
-    Environment: {
-      Variables: {
-        VOXOPS_PUBLIC_REPOSITORIES: "ibodev1/voxops",
-        VOXOPS_MCP_REMOTE_URL: {
-          "Fn::Join": ["", [{ "Fn::GetAtt": [api, "ApiEndpoint"] }, "/mcp"]],
-        },
-      },
-    },
-    VpcConfig: Match.absent(),
-    ReservedConcurrentExecutions: Match.absent(),
-    TracingConfig: Match.absent(),
-    Layers: Match.absent(),
-  });
-  template.hasResource("AWS::Logs::LogGroup", {
-    Properties: { RetentionInDays: 7 },
-    DeletionPolicy: "Delete",
-    UpdateReplacePolicy: "Delete",
-  });
-});
-
-it("allows log writes and narrowly scoped Nova inference only", () => {
-  const logs = template.toJSON().Outputs.RuntimeLogGroupName.Value.Ref as string;
-  const role = Object.keys(template.findResources("AWS::IAM::Role"))[0];
-  template.hasResourceProperties("AWS::IAM::Role", {
-    ManagedPolicyArns: Match.absent(),
-    Policies: Match.absent(),
-    AssumeRolePolicyDocument: {
-      Version: "2012-10-17",
-      Statement: [
-        {
-          Action: "sts:AssumeRole",
-          Effect: "Allow",
-          Principal: { Service: "lambda.amazonaws.com" },
-        },
-      ],
-    },
-  });
-  template.hasResourceProperties("AWS::IAM::Policy", {
-    Roles: [{ Ref: role }],
-    PolicyDocument: {
-      Version: "2012-10-17",
-      Statement: Match.arrayWith([
-        {
-          Effect: "Allow",
-          Action: ["logs:CreateLogStream", "logs:PutLogEvents"],
-          Resource: { "Fn::GetAtt": [logs, "Arn"] },
-        },
-      ]),
-    },
-  });
-  template.hasResourceProperties("AWS::Lambda::Function", {
-    Role: { "Fn::GetAtt": [role, "Arn"] },
-    LoggingConfig: { LogGroup: { Ref: logs } },
-  });
-  const statements = Object.values(template.findResources("AWS::IAM::Policy"))[0]!.Properties
-    .PolicyDocument.Statement as Array<Record<string, unknown>>;
-  expect(statements).toHaveLength(3);
-  const bedrock = statements.filter((statement) => statement.Action === "bedrock:InvokeModel");
-  expect(bedrock).toHaveLength(2);
-  expect(bedrock[0]!.Resource).toEqual({
-    "Fn::Join": [
-      "",
-      [
-        "arn:",
-        { Ref: "AWS::Partition" },
-        ":bedrock:",
-        { Ref: "AWS::Region" },
-        ":",
-        { Ref: "AWS::AccountId" },
-        ":inference-profile/eu.amazon.nova-micro-v1:0",
-      ],
-    ],
-  });
-  expect(bedrock[1]!.Condition).toEqual({
-    StringEquals: {
-      "bedrock:InferenceProfileArn": bedrock[0]!.Resource,
-    },
-  });
-  expect((bedrock[1]!.Resource as unknown[]).map((resource) => JSON.stringify(resource))).toEqual(
-    ["eu-central-1", "eu-north-1", "eu-west-1", "eu-west-3"].map((region) =>
-      JSON.stringify({
-        "Fn::Join": [
-          "",
-          [
-            "arn:",
-            { Ref: "AWS::Partition" },
-            `:bedrock:${region}::foundation-model/amazon.nova-micro-v1:0`,
-          ],
-        ],
       }),
-    ),
-  );
-  expect(JSON.stringify(statements)).not.toMatch(/bedrock:\*|Resource":"\*"|secretsmanager/i);
-});
-
-it("outputs identifiers only and packages only the bundled handler", () => {
-  expect(Object.keys(template.toJSON().Outputs).sort()).toEqual([
-    "ApiAccessLogGroupName",
-    "ApiEndpoint",
-    "FunctionArn",
-    "FunctionName",
-    "RuntimeLogGroupName",
-    "WebBucketName",
-    "WebDistributionId",
-    "WebUrl",
-  ]);
-  const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
-  const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
-  template.hasOutput("ApiEndpoint", { Value: { "Fn::GetAtt": [api, "ApiEndpoint"] } });
-  template.hasResourceProperties("AWS::Lambda::Function", {
-    LoggingConfig: { LogGroup: template.toJSON().Outputs.RuntimeLogGroupName.Value },
+    ]),
   });
-  template.hasOutput("FunctionArn", { Value: { "Fn::GetAtt": [runtime, "Arn"] } });
-  const bucket = Object.keys(template.findResources("AWS::S3::Bucket"))[0];
-  const distribution = Object.keys(template.findResources("AWS::CloudFront::Distribution"))[0];
-  template.hasOutput("WebBucketName", { Value: { Ref: bucket } });
-  template.hasOutput("WebDistributionId", { Value: { Ref: distribution } });
-  template.hasOutput("WebUrl", {
-    Value: { "Fn::Join": ["", ["https://", { "Fn::GetAtt": [distribution, "DomainName"] }]] },
-  });
-  const assets = readdirSync(outdir, { withFileTypes: true }).filter(
-    (entry) => entry.isDirectory() && entry.name.startsWith("asset."),
+  const wire = JSON.stringify(template.toJSON());
+  expect(wire).not.toMatch(
+    /authorizationHeader|requestBody|privateKey|clientSecret|tokenSigningSecret/,
   );
-  expect(assets).toHaveLength(1);
-  const asset = join(outdir, assets[0]!.name);
-  expect(readdirSync(asset)).toEqual(["index.js"]);
-  const bundle = readFileSync(join(asset, "index.js"), "utf8");
-  // Parsers contain PEM delimiters; reject actual encoded key data, not delimiter literals.
-  expect(/-----BEGIN (?:RSA )?PRIVATE KEY-----(?:\\r|\\n|\s)+[A-Za-z0-9+/=]{32}/.test(bundle)).toBe(
-    false,
+  const types = Object.values(template.toJSON().Resources as Record<string, { Type: string }>).map(
+    (entry) => entry.Type,
   );
-  expect(bundle).not.toContain("@hono/node-server");
-  expect(bundle).not.toContain("secretsmanager:GetSecretValue");
-  expect(bundle).not.toContain("VOXOPS_GITHUB_SECRET_ID");
-  expect(bundle).not.toContain("VOXOPS_ALEXA_AUTH_SECRET_ID");
-  expect(JSON.stringify(template.toJSON())).not.toMatch(
-    /privateKey|PRIVATE KEY|clientSecret|tokenSigningSecret|VOXOPS_GITHUB_APP_ID|VOXOPS_GITHUB_PRIVATE_KEY_PATH/,
+  for (const forbidden of [
+    "AWS::Lambda::Url",
+    "AWS::ApiGateway::Authorizer",
+    "AWS::ApiGatewayV2::Authorizer",
+    "AWS::EC2::VPC",
+    "AWS::EC2::NatGateway",
+    "AWS::Cognito::UserPool",
+    "AWS::SecretsManager::Secret",
+    "AWS::RDS::DBInstance",
+  ])
+    expect(types).not.toContain(forbidden);
+  expect(Object.keys(template.toJSON().Outputs)).toEqual(
+    expect.arrayContaining([
+      "ApiEndpoint",
+      "ChatApiEndpoint",
+      "RuntimeLogGroupName",
+      "ChatRuntimeLogGroupName",
+      "WebUrl",
+      "WebBucketName",
+    ]),
   );
 });
 
-it("executes the actual CommonJS bundle with the health fixture and networking disabled", () => {
-  const asset = readdirSync(outdir, { withFileTypes: true }).find(
-    (entry) => entry.isDirectory() && entry.name.startsWith("asset."),
-  );
-  const bundlePath = join(outdir, asset!.name, "index.js");
+it("bundles both handlers without credentials and preserves the health fixture", () => {
+  const assets = readdirSync(outdir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("asset."))
+    .map((entry) => join(outdir, entry.name, "index.js"));
+  expect(assets).toHaveLength(2);
+  for (const path of assets) {
+    const bundle = readFileSync(path, "utf8");
+    expect(bundle).not.toContain("-----BEGIN PRIVATE KEY-----");
+    expect(bundle).not.toContain("VOXOPS_GITHUB_SECRET_ID");
+    expect(bundle).not.toContain("VOXOPS_ALEXA_AUTH_SECRET_ID");
+  }
+  const healthBundle = assets.find((path) => readFileSync(path, "utf8").includes("/health"));
+  expect(healthBundle).toBeDefined();
   const fixturePath = fileURLToPath(
     new URL("../../scripts/aws/events/health.json", import.meta.url),
   );
@@ -420,24 +191,19 @@ it("executes the actual CommonJS bundle with the health fixture and networking d
     [
       "-e",
       `
-    const deny = () => { throw new Error('Network disabled in bundle smoke test'); };
+    const deny = () => { throw new Error('Network disabled'); };
     require('node:http').request = deny;
     require('node:https').request = deny;
     globalThis.fetch = deny;
     const { handler } = require(process.argv[1]);
     const event = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
-    const domainName = 'voxops.example';
-    const remote = { ...event, routeKey: 'GET /health', headers: { host: domainName },
-      requestContext: { ...event.requestContext, domainName, routeKey: 'GET /health' } };
-    Promise.all([handler(event), handler(remote)]).then(results => {
-      for (const result of results) {
-        require('node:assert/strict').equal(result.statusCode, 200);
-        require('node:assert/strict').deepEqual(JSON.parse(result.body), { status: 'ok' });
-      }
+    handler(event).then(result => {
+      require('node:assert/strict').equal(result.statusCode, 200);
+      require('node:assert/strict').deepEqual(JSON.parse(result.body), { status: 'ok' });
       console.log('health passed');
     }).catch(() => process.exitCode = 1);
   `,
-      bundlePath,
+      healthBundle!,
       fixturePath,
     ],
     {

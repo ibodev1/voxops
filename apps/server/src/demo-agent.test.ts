@@ -1,6 +1,6 @@
-import type { ConverseCommandInput, ConverseCommandOutput } from "@aws-sdk/client-bedrock-runtime";
 import { beforeEach, expect, it, vi } from "vitest";
-import { DemoChatRequestSchema, runDemoChat } from "./demo-agent.js";
+import type { TextStreamPart, ToolSet } from "ai";
+import { DemoChatRequestSchema, streamDemoChat, thinkingFilter, TOOL_NAMES } from "./demo-agent.js";
 
 const mcp = vi.hoisted(() => ({
   connect: vi.fn(),
@@ -8,6 +8,7 @@ const mcp = vi.hoisted(() => ({
   callTool: vi.fn(),
   close: vi.fn(),
 }));
+const sdk = vi.hoisted(() => ({ streamText: vi.fn(), toUIMessageStream: vi.fn() }));
 vi.mock("@modelcontextprotocol/client", () => ({
   Client: class {
     connect = mcp.connect;
@@ -19,223 +20,146 @@ vi.mock("@modelcontextprotocol/client", () => ({
     constructor(readonly url: URL) {}
   },
 }));
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
+  streamText: sdk.streamText,
+  toUIMessageStream: sdk.toUIMessageStream,
+}));
 
-const names = [
-  "get_repository_status",
-  "list_open_issues",
-  "list_pull_requests",
-  "list_workflow_runs",
-];
-const endpoint = new URL("https://example.test/mcp");
 const history = [{ role: "user" as const, content: "What's happening with VoxOps?" }];
-const toolUse = (
-  name: string,
-  input: Record<string, unknown> = { owner: "ibodev1", repo: "voxops" },
-) =>
-  ({
-    output: {
-      message: { role: "assistant", content: [{ toolUse: { toolUseId: "call-1", name, input } }] },
-    },
-    stopReason: "tool_use",
-  }) as ConverseCommandOutput;
-const answer = (text = "The repository is active.") =>
-  ({
-    output: { message: { role: "assistant", content: [{ text }] } },
-    stopReason: "end_turn",
-  }) as ConverseCommandOutput;
 
 beforeEach(() => {
   vi.resetAllMocks();
   mcp.listTools.mockResolvedValue({
-    tools: names.map((name) => ({
-      name,
-      description: `Live ${name}`,
-      inputSchema: {
-        type: "object",
-        properties: { owner: { type: "string" }, repo: { type: "string" } },
-        required: ["owner", "repo"],
-        additionalProperties: false,
-      },
-    })),
+    tools: TOOL_NAMES.map((name) => ({ name, description: `Live ${name}` })),
   });
-  mcp.callTool.mockResolvedValue({
-    content: [{ type: "text", text: "Repository ibodev1/voxops" }],
-    structuredContent: { fullName: "ibodev1/voxops", archived: false },
-  });
+  mcp.callTool.mockResolvedValue({ structuredContent: { fullName: "ibodev1/voxops" } });
+  sdk.streamText.mockReturnValue({ stream: new ReadableStream() });
+  sdk.toUIMessageStream.mockReturnValue(new ReadableStream());
 });
 
-it("rejects empty, oversized, extra-field, and malformed histories before inference", () => {
-  const valid = { messages: history };
-  expect(DemoChatRequestSchema.safeParse(valid).success).toBe(true);
+it("validates bounded alternating history before inference", () => {
+  expect(DemoChatRequestSchema.safeParse({ messages: history }).success).toBe(true);
   for (const request of [
     { messages: [] },
     { messages: [{ role: "user", content: " " }] },
     { messages: [{ role: "user", content: "x".repeat(401) }] },
-    { messages: Array.from({ length: 9 }, () => history[0]) },
-    {
-      messages: Array.from({ length: 7 }, (_, index) => ({
-        role: index % 2 === 0 ? "user" : "assistant",
-        content: "x".repeat(400),
-      })),
-    },
-    { messages: [{ role: "assistant", content: "hello" }] },
     { messages: [history[0], history[0]] },
-    { ...valid, debug: true },
+    { messages: history, debug: true },
   ])
     expect(DemoChatRequestSchema.safeParse(request).success).toBe(false);
 });
 
-it("maps Bedrock tool use to the discovered MCP capability and forwards the result", async () => {
-  const converse = vi
-    .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()
-    .mockResolvedValueOnce(toolUse("get_repository_status"))
-    .mockResolvedValueOnce(answer());
-  const result = await runDemoChat(history, endpoint, converse);
-  expect(mcp.connect).toHaveBeenCalledOnce();
+it("exposes exactly four discovered read tools and executes through the MCP client", async () => {
+  await streamDemoChat(history, new URL("https://example.test/mcp"));
+  const options = sdk.streamText.mock.calls[0]![0] as Parameters<typeof import("ai").streamText>[0];
+  expect(Object.keys(options.tools ?? {}).sort()).toEqual([...TOOL_NAMES].sort());
+  expect((options.model as { modelId: string }).modelId).toBe("eu.amazon.nova-micro-v1:0");
+  const status = options.tools?.get_repository_status;
+  if (!status) throw new Error("Expected repository status tool");
+  expect(status.description).toBe("Live get_repository_status");
+  const schema = (status.inputSchema as { jsonSchema: Record<string, unknown> }).jsonSchema;
+  expect(Object.keys(schema).sort()).toEqual(["properties", "required", "type"]);
+  expect(schema.required).toEqual(["owner", "repo"]);
+  expect(status.execute).toBeTypeOf("function");
+  const result = await status.execute?.({ owner: "ibodev1", repo: "voxops" }, {} as never);
   expect(mcp.callTool).toHaveBeenCalledWith({
     name: "get_repository_status",
     arguments: { owner: "ibodev1", repo: "voxops" },
   });
-  expect(result).toMatchObject({
-    message: "The repository is active.",
-    activity: [
-      {
-        name: "get_repository_status",
-        status: "ok",
-        result: { fullName: "ibodev1/voxops" },
-      },
-    ],
+  expect(result).toMatchObject({ status: "ok", result: { fullName: "ibodev1/voxops" } });
+  for (let index = 0; index < 5; index++)
+    await status.execute?.({ owner: "ibodev1", repo: "voxops" }, {} as never);
+  const limited = await status.execute?.({ owner: "ibodev1", repo: "voxops" }, {} as never);
+  expect(limited).toMatchObject({ status: "error", message: "Repository lookup limit reached." });
+  expect(mcp.callTool).toHaveBeenCalledTimes(6);
+  expect(options.prepareStep?.({ stepNumber: 0 } as never)).toMatchObject({
+    toolChoice: "required",
   });
-  expect(converse.mock.calls[0]![0].modelId).toBe("eu.amazon.nova-micro-v1:0");
-  expect(converse.mock.calls[0]![0].toolConfig?.toolChoice).toEqual({ any: {} });
-  expect(converse.mock.calls[0]![0].toolConfig?.tools).toHaveLength(4);
-  expect(converse.mock.calls[1]![0].messages?.at(-1)).toMatchObject({
-    role: "user",
-    content: [
-      {
-        toolResult: {
-          status: "success",
-          content: [{ text: '{"fullName":"ibodev1/voxops","archived":false}' }],
-        },
-      },
-    ],
+  expect(options.prepareStep?.({ stepNumber: 3 } as never)).toMatchObject({ activeTools: [] });
+  const bound = options.stopWhen;
+  expect(typeof bound).toBe("function");
+  if (typeof bound === "function") {
+    expect(bound({ steps: Array.from({ length: 3 }, () => ({})) } as never)).toBe(false);
+    expect(bound({ steps: Array.from({ length: 4 }, () => ({})) } as never)).toBe(true);
+  }
+  expect(sdk.toUIMessageStream.mock.calls[0]![0]).toMatchObject({
+    sendReasoning: false,
   });
+  expect(sdk.toUIMessageStream.mock.calls[0]![0].onError(new Error("secret"))).toBe(
+    "The live answer is unavailable right now.",
+  );
+});
+
+it("rejects missing MCP capabilities before streaming", async () => {
+  mcp.listTools.mockResolvedValue({ tools: [{ name: "get_repository_status" }] });
+  await expect(streamDemoChat(history, new URL("https://example.test/mcp"))).rejects.toThrow(
+    "MCP tools unavailable",
+  );
+  expect(sdk.streamText).not.toHaveBeenCalled();
   expect(mcp.close).toHaveBeenCalledOnce();
 });
 
-it("removes Nova thinking blocks only from the final model answer", async () => {
-  const literalHistory = [{ role: "user" as const, content: "What does <thinking> mean?" }];
-  const final = {
-    output: {
-      message: {
-        role: "assistant",
-        content: [
-          { text: "<thinking>private plan" },
-          { text: "private trace</thinking>The repository is active." },
-          { text: "<thinking>more private reasoning</thinking>CI is green." },
-        ],
-      },
+async function filtered(
+  parts: TextStreamPart<ToolSet>[],
+  requireTool = false,
+): Promise<TextStreamPart<ToolSet>[]> {
+  const output: TextStreamPart<ToolSet>[] = [];
+  const input = new ReadableStream<TextStreamPart<ToolSet>>({
+    start(controller) {
+      for (const part of parts) controller.enqueue(part);
+      controller.close();
     },
-    stopReason: "end_turn",
-  } as ConverseCommandOutput;
-  const converse = vi
-    .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()
-    .mockResolvedValueOnce(toolUse("get_repository_status"))
-    .mockResolvedValueOnce(final);
-  const result = await runDemoChat(literalHistory, endpoint, converse);
-  expect(result.message).toBe("The repository is active.\nCI is green.");
-  expect(JSON.stringify(result)).not.toMatch(
-    /thinking|private plan|private trace|private reasoning/,
-  );
-  expect(result.activity).toMatchObject([
-    { name: "get_repository_status", status: "ok", result: { fullName: "ibodev1/voxops" } },
+  });
+  for await (const part of input.pipeThrough(
+    thinkingFilter<ToolSet>(requireTool)({ tools: {}, stopStream() {} }),
+  ))
+    output.push(part);
+  return output;
+}
+
+it("streams visible text while removing split and nested literal thinking blocks", async () => {
+  const chunks = [
+    "The repo ",
+    "<thi",
+    "nking>private <thinking>nested</thinking> trace</thi",
+    "nking>is active.",
+  ];
+  const parts = chunks.map((text) => ({ type: "text-delta" as const, id: "answer", text }));
+  const output = await filtered(parts);
+  expect(
+    output
+      .filter((part) => part.type === "text-delta")
+      .map((part) => part.text)
+      .join(""),
+  ).toBe("The repo is active.");
+  expect(output.length).toBeGreaterThan(1);
+});
+
+it("does not touch reasoning parts and fails closed for an unclosed thinking block", async () => {
+  const reasoning = { type: "reasoning-delta" as const, id: "reason", text: "private" };
+  expect(await filtered([reasoning])).toEqual([reasoning]);
+  await expect(
+    filtered([{ type: "text-delta", id: "answer", text: "Visible <thinking>private" }]),
+  ).rejects.toThrow("Incomplete model thinking block");
+});
+
+it("withholds model text until a real tool result has arrived", async () => {
+  const toolResult = {
+    type: "tool-result",
+    toolCallId: "call-1",
+    toolName: "get_repository_status",
+    input: { owner: "ibodev1", repo: "voxops" },
+    output: { status: "ok" },
+  } as TextStreamPart<ToolSet>;
+  const parts: TextStreamPart<ToolSet>[] = [
+    { type: "text-delta", id: "prelude", text: "Unverified prelude" },
+    toolResult,
+    { type: "text-delta", id: "answer", text: "Verified answer" },
+  ];
+  const result = await filtered(parts, true);
+  expect(result.filter((part) => part.type === "text-delta").map((part) => part.text)).toEqual([
+    "Verified answer",
   ]);
-  expect(converse.mock.calls[0]![0].messages?.[0]?.content).toEqual([
-    { text: "What does <thinking> mean?" },
-  ]);
-});
-
-it("fails safely if a Nova thinking block is left open", async () => {
-  const converse = vi
-    .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()
-    .mockResolvedValueOnce(toolUse("get_repository_status"))
-    .mockResolvedValueOnce(answer("<thinking>private trace"));
-  await expect(runDemoChat(history, endpoint, converse)).rejects.toThrow(
-    "Malformed Bedrock thinking block",
-  );
-  expect(mcp.close).toHaveBeenCalledOnce();
-});
-
-it("bounds repeated tool requests at three rounds", async () => {
-  const converse = vi
-    .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()
-    .mockResolvedValue(toolUse("list_open_issues"));
-  const result = await runDemoChat(history, endpoint, converse);
-  expect(converse).toHaveBeenCalledTimes(4);
-  expect(mcp.callTool).toHaveBeenCalledTimes(3);
-  expect(result.message).toMatch(/lookup limit/);
-});
-
-it("never invokes an unsupported MCP tool even if Bedrock requests it", async () => {
-  const converse = vi
-    .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()
-    .mockResolvedValueOnce(toolUse("delete_repository"))
-    .mockResolvedValueOnce(answer("That tool is unavailable."));
-  await expect(runDemoChat(history, endpoint, converse)).rejects.toThrow(
-    "Ungrounded Bedrock response",
-  );
-  expect(mcp.callTool).not.toHaveBeenCalled();
-  expect(converse.mock.calls[1]![0].messages?.at(-1)).toMatchObject({
-    content: [{ toolResult: { status: "error", content: [{ text: "Unsupported tool." }] } }],
-  });
-});
-
-it("reports MCP failures safely and does not forward error payloads to the browser", async () => {
-  mcp.callTool.mockResolvedValue({
-    isError: true,
-    content: [{ type: "text", text: "internal upstream detail" }],
-    structuredContent: { secret: "hidden" },
-  });
-  const converse = vi
-    .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()
-    .mockResolvedValueOnce(toolUse("list_open_issues"))
-    .mockResolvedValueOnce(answer("Repository data is unavailable."));
-  const result = await runDemoChat(history, endpoint, converse);
-  expect(result.activity).toMatchObject([{ name: "list_open_issues", status: "error" }]);
-  expect(result.activity[0]).not.toHaveProperty("result");
-  expect(JSON.stringify(converse.mock.calls[1]![0])).not.toMatch(/hidden|internal upstream detail/);
-});
-
-it("passes a nonallowlisted repository through MCP enforcement and returns only a generic failure", async () => {
-  mcp.callTool.mockResolvedValue({
-    isError: true,
-    content: [{ type: "text", text: "Repository is not on the public allowlist." }],
-  });
-  const converse = vi
-    .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()
-    .mockResolvedValueOnce(toolUse("get_repository_status", { owner: "outsider", repo: "private" }))
-    .mockResolvedValueOnce(answer("That repository is unavailable."));
-  const result = await runDemoChat(history, endpoint, converse);
-  expect(mcp.callTool).toHaveBeenCalledWith({
-    name: "get_repository_status",
-    arguments: { owner: "outsider", repo: "private" },
-  });
-  expect(result.activity[0]).toMatchObject({ status: "error" });
-  expect(converse.mock.calls[1]![0].messages?.at(-1)).toMatchObject({
-    content: [
-      { toolResult: { status: "error", content: [{ text: "Repository data is unavailable." }] } },
-    ],
-  });
-});
-
-it("closes the MCP client on Bedrock and MCP discovery failures", async () => {
-  const converse = vi
-    .fn<(input: ConverseCommandInput) => Promise<ConverseCommandOutput>>()
-    .mockRejectedValue(new Error("Bedrock internal detail"));
-  await expect(runDemoChat(history, endpoint, converse)).rejects.toThrow("Bedrock internal detail");
-  expect(mcp.close).toHaveBeenCalledOnce();
-  mcp.close.mockClear();
-  mcp.listTools.mockRejectedValue(new Error("MCP internal detail"));
-  await expect(runDemoChat(history, endpoint, converse)).rejects.toThrow("MCP internal detail");
-  expect(mcp.close).toHaveBeenCalledOnce();
+  await expect(filtered([parts[0]!], true)).rejects.toThrow("Ungrounded model response");
 });

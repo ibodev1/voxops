@@ -166,3 +166,25 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Medium
 - **Workaround:** Inspect the synthesized template locally and leave live diff and deployment for a reviewed, non-root IAM Identity Center session.
 - **Suggested improvement:** Reauthenticate with the administrative temporary-credential identity before the manual diff and deployment.
+
+## 2026-09-18: AI SDK schema package version mismatch
+
+- **Date:** 2026-09-18
+- **Component/tool:** AI SDK / TypeScript
+- **Task:** Supply Nova-compatible minimal JSON schemas to AI SDK tools while retaining input validation.
+- **Expected behavior:** The Bedrock provider's `@ai-sdk/provider-utils` version would interoperate with the `ai` package's `tool` type.
+- **Actual behavior:** Importing `jsonSchema` from provider-utils `5.0.42` alongside `ai`'s `5.0.43` produced TS2769 because their branded schema symbols differed.
+- **Severity:** Low
+- **Workaround:** Pin the direct schema utility to `5.0.43`, matching `ai`; keep only `type`, `properties`, and `required` at the schema root, as the prior Nova tool adapter did.
+- **Suggested improvement:** Align provider-utils versions across AI SDK packages when using schemas directly.
+
+## 2026-09-18: REST access logs require an account logging role
+
+- **Date:** 2026-09-18
+- **Component/tool:** API Gateway REST API / CloudWatch Logs
+- **Task:** Add an isolated streaming REST route without changing account-level settings.
+- **Expected behavior:** Configure a stage access-log group as independently as the existing HTTP API.
+- **Actual behavior:** [AWS documents](https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-logging.html) an account-level `cloudWatchRoleArn` and assumable IAM role for REST CloudWatch logging.
+- **Severity:** Low
+- **Workaround:** Leave REST access logs off in this milestone; retain seven-day chat Lambda logs and API Gateway metrics. The HTTP API access logs remain enabled.
+- **Suggested improvement:** Decide separately whether account-level REST logging is warranted after live verification.

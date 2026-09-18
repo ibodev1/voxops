@@ -30,7 +30,7 @@ The smoke script initializes MCP, lists exactly four tools, invokes each against
 
 ### Run the simulated experience
 
-The web app calls a server-side Bedrock Converse agent. The agent uses the official MCP client to call the same VoxOps `/mcp` endpoint; it does not call GitHub directly. For local development, use AWS temporary credentials with Bedrock access and run the server and web app in separate terminals:
+The web app streams a server-side AI SDK answer from Bedrock Nova Micro. AI SDK tools use the official MCP client to call the same VoxOps `/mcp` endpoint; they do not call GitHub directly. For local development, use AWS temporary credentials with Bedrock access and run the server and web app in separate terminals:
 
 ```powershell
 $env:AWS_PROFILE = '<your-temporary-credential-profile>'
@@ -43,11 +43,11 @@ pnpm dev:server
 pnpm --filter @voxops/web dev
 ```
 
-Open `http://127.0.0.1:5173`. Vite proxies local `/api` requests to the server on port 3000; the local server uses its loopback `/mcp` endpoint by default. To make it call the deployed MCP server instead, set `VOXOPS_MCP_REMOTE_URL` to the full public `/mcp` URL before starting the server. For a deployed backend, build the static web app with `VITE_VOXOPS_API_URL` set to the public API endpoint, with no trailing `/mcp` path. No AWS credentials belong in Vite variables. The Bedrock profile and manual deployment prerequisites are in [AWS development](docs/aws-development.md).
+Open `http://127.0.0.1:5173`. Vite proxies local `/api` requests to the server on port 3000; its local-only streaming chat adapter uses the loopback `/mcp` endpoint by default. To use a deployed MCP server instead, set `VOXOPS_MCP_REMOTE_URL` to the full public `/mcp` URL before starting the server. In production, the browser sends same-origin `/api/demo/chat` through CloudFront. No AWS credentials belong in Vite variables. The Bedrock profile and manual deployment prerequisites are in [AWS development](docs/aws-development.md).
 
 ## AWS boundary
 
-CDK defines one HTTP API with only `GET /health`, `POST /mcp`, and `POST /api/demo/chat`, one 256 MB ARM64 Lambda, and seven-day runtime/access logs. The Lambda calls the deployed MCP URL through API Gateway for demo chat. API Gateway throttling is 10 requests per second with burst 20. No REST repository routes, catch-all, Cognito, Secrets Manager access, database, VPC, or always-on compute are configured. [AWS development and manual deployment](docs/aws-development.md) has the commands and smoke checks.
+CDK keeps the HTTP API and its Lambda for only `GET /health` and `POST /mcp`. A separate regional REST API streams `POST /api/demo/chat` from a 256 MB ARM64 Lambda. CloudFront forwards that one path without caching; its default behavior still serves private S3 assets. Both APIs have best-effort throttling. No REST repository routes, catch-all, Cognito, Secrets Manager access, database, VPC, or always-on compute are configured. [AWS development and manual deployment](docs/aws-development.md) has the commands and smoke checks.
 
 Account linking and service authentication are intentionally disabled for this public, user-independent demo. [The Alexa CLI access blocker](docs/alexa-cli-access-blocker.md) and [Alexa M6 checklist](docs/alexa-m6-checklist.md) record the remaining live Add-on work. Private repository GitHub App access, account linking, and safe write actions are possible future work, outside this demo.
 

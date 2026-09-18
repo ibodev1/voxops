@@ -3,13 +3,16 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@aws-sdk/client-bedrock-runtime": "3.1127.0",
+    "@ai-sdk/amazon-bedrock": "5.0.85",
+    "@ai-sdk/provider-utils": "5.0.43",
+    "@aws-sdk/credential-providers": "3.1133.0",
     "@hono/node-server": "2.1.1",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/hono": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "@voxops/contracts": "workspace:*",
     "@voxops/github": "workspace:*",
+    "ai": "7.0.104",
     "hono": "4.13.8",
     "zod": "4.6.5"
   }

@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport, type UIMessage } from "ai";
 
 type Activity = {
   name: string;
   durationMs: number;
-  status: "ok" | "error";
+  status: "running" | "ok" | "error";
   result?: Record<string, unknown>;
 };
 type Turn = { role: "user" | "assistant"; content: string; activity?: Activity[] };
@@ -26,9 +28,26 @@ const toolNames = new Set([
   "list_pull_requests",
   "list_workflow_runs",
 ]);
-const apiBase =
-  import.meta.env.VITE_VOXOPS_API_URL?.trim().replace(/\/$/, "") ||
-  (import.meta.env.DEV ? "" : undefined);
+const transport = new DefaultChatTransport({
+  api: "/api/demo/chat",
+  prepareSendMessagesRequest: ({ messages }) => {
+    const recent = messages
+      .filter((message) => message.role === "user" || message.role === "assistant")
+      .map((message) => ({
+        role: message.role,
+        content: message.parts
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("")
+          .slice(0, 400),
+      }))
+      .filter((message) => message.content.trim())
+      .slice(-7);
+    while (recent.reduce((length, message) => length + message.content.length, 0) > 2400)
+      recent.splice(0, 2);
+    return { body: { messages: recent } };
+  },
+});
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -40,30 +59,43 @@ function text(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function activityFromResponse(value: unknown): Activity[] | undefined {
-  if (!Array.isArray(value)) return undefined;
+function activityFromParts(parts: UIMessage["parts"]): Activity[] {
   const activity: Activity[] = [];
-  for (const entry of value) {
-    const item = asObject(entry);
-    const detail = asObject(item?.result);
-    if (
-      !item ||
-      typeof item.name !== "string" ||
-      !toolNames.has(item.name) ||
-      typeof item.durationMs !== "number" ||
-      !Number.isFinite(item.durationMs) ||
-      (item.status !== "ok" && item.status !== "error") ||
-      (item.result !== undefined && !detail)
-    )
-      return undefined;
+  for (const part of parts) {
+    const name = part.type === "dynamic-tool" ? part.toolName : part.type.slice(5);
+    if (!part.type.startsWith("tool-") && part.type !== "dynamic-tool") continue;
+    if (!toolNames.has(name) || !("state" in part)) continue;
+    const output = "output" in part ? asObject(part.output) : undefined;
+    const detail = asObject(output?.result);
+    const status =
+      part.state === "output-available"
+        ? output?.status === "ok"
+          ? "ok"
+          : "error"
+        : part.state === "output-error" || part.state === "output-denied"
+          ? "error"
+          : "running";
     activity.push({
-      name: item.name,
-      durationMs: item.durationMs,
-      status: item.status,
+      name,
+      durationMs: typeof output?.durationMs === "number" ? output.durationMs : 0,
+      status,
       ...(detail ? { result: detail } : {}),
     });
   }
   return activity;
+}
+
+export function turnsFromMessages(messages: UIMessage[]): Turn[] {
+  return messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({
+      role: message.role as "user" | "assistant",
+      content: message.parts
+        .filter((part) => part.type === "text")
+        .map((part) => part.text)
+        .join(""),
+      ...(message.role === "assistant" ? { activity: activityFromParts(message.parts) } : {}),
+    }));
 }
 
 function contextFromActivity(previous: RepositoryContext, activity: Activity[]): RepositoryContext {
@@ -86,15 +118,21 @@ function ToolActivity({ items }: { items: Activity[] }) {
         <details className="tool-row" key={`${item.name}-${index}`}>
           <summary>
             <span className={`tool-state ${item.status}`} aria-hidden="true">
-              {item.status === "ok" ? "✓" : "!"}
+              {item.status === "ok" ? "✓" : item.status === "running" ? "…" : "!"}
             </span>
             <span className="tool-name">{item.name}</span>
-            <span className="tool-duration">{item.durationMs} ms</span>
+            <span className="tool-duration">
+              {item.status === "running" ? "Checking repository…" : `${item.durationMs} ms`}
+            </span>
             <span className="tool-detail-label">Details</span>
           </summary>
           <div className="tool-detail-content">
             <span>
-              {item.status === "ok" ? "Live MCP result" : "The MCP read did not complete."}
+              {item.status === "ok"
+                ? "Live MCP result"
+                : item.status === "running"
+                  ? "Checking repository…"
+                  : "The MCP read did not complete."}
             </span>
             {item.result && <pre>{JSON.stringify(item.result, null, 2).slice(0, 1800)}</pre>}
           </div>
@@ -194,50 +232,30 @@ function ContextPanel({ context }: { context: RepositoryContext }) {
 }
 
 export function App() {
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const { messages, sendMessage, regenerate, status, error, clearError } = useChat({ transport });
+  const turns = useMemo(() => turnsFromMessages(messages), [messages]);
+  const loading = status === "streaming" || status === "submitted";
   const [draft, setDraft] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [context, setContext] = useState<RepositoryContext>({});
+  const context = useMemo(
+    () =>
+      turns.reduce(
+        (current, turn) => contextFromActivity(current, turn.activity ?? []),
+        {} as RepositoryContext,
+      ),
+    [turns],
+  );
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [turns, loading, error]);
 
-  async function ask(question: string, retry = false) {
+  async function ask(question: string) {
     const content = question.trim();
     if (!content || loading) return;
-    const updated: Turn[] = retry ? turns : [...turns, { role: "user", content }];
-    if (!retry) setTurns(updated);
     setDraft("");
-    setError(null);
-    setLoading(true);
-    try {
-      if (apiBase === undefined) throw new Error("Demo backend is not configured.");
-      const recent = updated.slice(-7).map(({ role, content }) => ({ role, content }));
-      while (recent.reduce((length, message) => length + message.content.length, 0) > 2400) {
-        recent.splice(0, 2);
-      }
-      const response = await fetch(`${apiBase}/api/demo/chat`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: recent }),
-      });
-      if (!response.ok) throw new Error("The live answer is unavailable right now.");
-      const data: unknown = await response.json();
-      const result = asObject(data);
-      const activity = activityFromResponse(result?.activity);
-      if (!result || typeof result.message !== "string" || !result.message.trim() || !activity) {
-        throw new Error("The live answer is unavailable right now.");
-      }
-      setTurns([...updated, { role: "assistant", content: result.message, activity }]);
-      setContext((current) => contextFromActivity(current, activity));
-    } catch {
-      setError("The live answer is unavailable right now.");
-    } finally {
-      setLoading(false);
-    }
+    clearError();
+    await sendMessage({ text: content });
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -252,7 +270,7 @@ export function App() {
     }
   }
 
-  const retryQuestion = turns.at(-1)?.role === "user" ? turns.at(-1)?.content : undefined;
+  const retryQuestion = turns.some((turn) => turn.role === "user");
   return (
     <div className="app-shell min-h-screen">
       <header className="app-header">
@@ -301,9 +319,9 @@ export function App() {
             )}
             {error && (
               <div className="error-message" role="alert">
-                <span>{error}</span>
+                <span>The live answer is unavailable right now.</span>
                 {retryQuestion && (
-                  <button type="button" onClick={() => void ask(retryQuestion, true)}>
+                  <button type="button" onClick={() => void regenerate()}>
                     Retry ↗
                   </button>
                 )}

@@ -1,7 +1,13 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { CfnOutput, Duration, RemovalPolicy, Stack, type StackProps } from "aws-cdk-lib";
-import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
+import {
+  AccessLogFormat,
+  EndpointType,
+  LambdaIntegration,
+  ResponseTransferMode,
+  RestApi,
+} from "aws-cdk-lib/aws-apigateway";
 import {
   HttpApi,
   HttpMethod,
@@ -10,8 +16,14 @@ import {
   PayloadFormatVersion,
 } from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
-import { AllowedMethods, Distribution, ViewerProtocolPolicy } from "aws-cdk-lib/aws-cloudfront";
-import { S3BucketOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
+import {
+  AllowedMethods,
+  CachePolicy,
+  Distribution,
+  OriginRequestPolicy,
+  ViewerProtocolPolicy,
+} from "aws-cdk-lib/aws-cloudfront";
+import { RestApiOrigin, S3BucketOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
 import { PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Architecture, Runtime } from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction, OutputFormat } from "aws-cdk-lib/aws-lambda-nodejs";
@@ -37,20 +49,28 @@ export class VoxOpsDevStack extends Stack {
       assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
     });
     logs.grantWrite(role);
+    const chatLogs = new LogGroup(this, "ChatRuntimeLogs", {
+      retention: RetentionDays.ONE_WEEK,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+    const chatRole = new Role(this, "ChatRuntimeRole", {
+      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+    });
+    chatLogs.grantWrite(chatRole);
     const profileArn = this.formatArn({
       service: "bedrock",
       resource: "inference-profile",
       resourceName: "eu.amazon.nova-micro-v1:0",
     });
-    role.addToPolicy(
+    chatRole.addToPolicy(
       new PolicyStatement({
-        actions: ["bedrock:InvokeModel"],
+        actions: ["bedrock:InvokeModelWithResponseStream"],
         resources: [profileArn],
       }),
     );
-    role.addToPolicy(
+    chatRole.addToPolicy(
       new PolicyStatement({
-        actions: ["bedrock:InvokeModel"],
+        actions: ["bedrock:InvokeModelWithResponseStream"],
         resources: ["eu-central-1", "eu-north-1", "eu-west-1", "eu-west-3"].map((region) =>
           this.formatArn({
             service: "bedrock",
@@ -83,6 +103,26 @@ export class VoxOpsDevStack extends Stack {
         bundleAwsSDK: true,
       },
     });
+    const chatRuntime = new NodejsFunction(this, "ChatRuntime", {
+      entry: join(root, "apps/server/src/chat-lambda.ts"),
+      projectRoot: root,
+      depsLockFilePath: join(root, "pnpm-lock.yaml"),
+      handler: "handler",
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      memorySize: 256,
+      timeout: Duration.seconds(60),
+      reservedConcurrentExecutions: 2,
+      role: chatRole,
+      logGroup: chatLogs,
+      bundling: {
+        target: "node24",
+        format: OutputFormat.CJS,
+        minify: true,
+        sourceMap: false,
+        bundleAwsSDK: true,
+      },
+    });
     const accessLogs = new LogGroup(this, "ApiAccessLogs", {
       retention: RetentionDays.ONE_WEEK,
       removalPolicy: RemovalPolicy.DESTROY,
@@ -107,16 +147,12 @@ export class VoxOpsDevStack extends Stack {
     const api = new HttpApi(this, "HealthApi", {
       createDefaultStage: false,
       corsPreflight: {
-        allowOrigins: [
-          "http://127.0.0.1:5173",
-          "http://localhost:5173",
-          `https://${webDistribution.distributionDomainName}`,
-        ],
+        allowOrigins: ["http://127.0.0.1:5173", "http://localhost:5173"],
         allowMethods: [CorsHttpMethod.GET, CorsHttpMethod.POST],
         allowHeaders: ["content-type"],
       },
     });
-    runtime.addEnvironment("VOXOPS_MCP_REMOTE_URL", `${api.apiEndpoint}/mcp`);
+    chatRuntime.addEnvironment("VOXOPS_MCP_REMOTE_URL", `${api.apiEndpoint}/mcp`);
     const integration = new HttpLambdaIntegration("HealthIntegration", runtime, {
       payloadFormatVersion: PayloadFormatVersion.VERSION_2_0,
       scopePermissionToRoute: true,
@@ -127,7 +163,6 @@ export class VoxOpsDevStack extends Stack {
       integration,
     });
     api.addRoutes({ path: "/mcp", methods: [HttpMethod.POST], integration });
-    api.addRoutes({ path: "/api/demo/chat", methods: [HttpMethod.POST], integration });
     api.addStage("DefaultStage", {
       stageName: "$default",
       autoDeploy: true,
@@ -147,9 +182,39 @@ export class VoxOpsDevStack extends Stack {
         ),
       },
     });
+    const chatApi = new RestApi(this, "ChatApi", {
+      endpointTypes: [EndpointType.REGIONAL],
+      cloudWatchRole: false,
+      deployOptions: {
+        stageName: "dev",
+        throttlingRateLimit: 10,
+        throttlingBurstLimit: 20,
+      },
+    });
+    chatApi.root
+      .addResource("api")
+      .addResource("demo")
+      .addResource("chat")
+      .addMethod(
+        "POST",
+        new LambdaIntegration(chatRuntime, {
+          proxy: true,
+          responseTransferMode: ResponseTransferMode.STREAM,
+          timeout: Duration.seconds(60),
+          allowTestInvoke: false,
+        }),
+      );
+    webDistribution.addBehavior("api/demo/chat", new RestApiOrigin(chatApi), {
+      allowedMethods: AllowedMethods.ALLOW_ALL,
+      cachePolicy: CachePolicy.CACHING_DISABLED,
+      originRequestPolicy: OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+      viewerProtocolPolicy: ViewerProtocolPolicy.HTTPS_ONLY,
+    });
     new CfnOutput(this, "FunctionName", { value: runtime.functionName });
     new CfnOutput(this, "FunctionArn", { value: runtime.functionArn });
     new CfnOutput(this, "ApiEndpoint", { value: api.apiEndpoint });
+    new CfnOutput(this, "ChatApiEndpoint", { value: chatApi.urlForPath("/api/demo/chat") });
+    new CfnOutput(this, "ChatRuntimeLogGroupName", { value: chatLogs.logGroupName });
     new CfnOutput(this, "RuntimeLogGroupName", { value: logs.logGroupName });
     new CfnOutput(this, "ApiAccessLogGroupName", { value: accessLogs.logGroupName });
     new CfnOutput(this, "WebBucketName", { value: webBucket.bucketName });
