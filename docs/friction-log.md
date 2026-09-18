@@ -144,3 +144,25 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Low
 - **Workaround:** Pin `3.1127.0`, which installs under the guard, and remove the generated SDK exception.
 - **Suggested improvement:** Check release age before pinning a new AWS SDK package; keep exceptions narrow and reviewed.
+
+## 2026-09-18: CDK S3 origin TypeScript compatibility
+
+- **Date:** 2026-09-18
+- **Component/tool:** AWS CDK 2.269.0 / TypeScript `exactOptionalPropertyTypes`
+- **Task:** Pass the private web bucket to `S3BucketOrigin.withOriginAccessControl`.
+- **Expected behavior:** CDK's `Bucket` satisfies its `IBucket` parameter.
+- **Actual behavior:** Type checking rejected `Bucket.isWebsite` (`boolean | undefined`) against `IBucket.isWebsite` (`boolean`). Synthesis and infrastructure tests passed.
+- **Severity:** Low
+- **Workaround:** Use a local `IBucket` type assertion at the origin call; keep strict TypeScript enabled.
+- **Suggested improvement:** Align CDK's `Bucket` and `IBucket` declarations for projects using `exactOptionalPropertyTypes`.
+
+## 2026-09-18: AWS diff unavailable without a valid non-root session
+
+- **Date:** 2026-09-18
+- **Component/tool:** AWS CLI / CDK diff
+- **Task:** Review the live stack diff without deploying.
+- **Expected behavior:** A valid temporary-credential identity permits the read-only `cdk diff --no-change-set` operation.
+- **Actual behavior:** `aws sts get-caller-identity` could not load the configured login session for an ARN ending in `:root`; `pnpm infra:diff` then could not resolve the AWS account. No AWS changes were made.
+- **Severity:** Medium
+- **Workaround:** Inspect the synthesized template locally and leave live diff and deployment for a reviewed, non-root IAM Identity Center session.
+- **Suggested improvement:** Reauthenticate with the administrative temporary-credential identity before the manual diff and deployment.

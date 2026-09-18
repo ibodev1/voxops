@@ -15,7 +15,7 @@ const template = Template.fromStack(stack);
 app.synth();
 afterAll(() => rmSync(outdir, { recursive: true, force: true }));
 
-it("synthesizes only the public MCP and demo HTTP boundary", () => {
+it("adds only private static hosting resources to the existing HTTP boundary", () => {
   template.resourceCountIs("AWS::Lambda::Function", 1);
   template.resourceCountIs("AWS::Logs::LogGroup", 2);
   template.resourceCountIs("AWS::IAM::Role", 1);
@@ -34,6 +34,8 @@ it("synthesizes only the public MCP and demo HTTP boundary", () => {
     "AWS::ApiGatewayV2::Route",
     "AWS::ApiGatewayV2::Route",
     "AWS::ApiGatewayV2::Stage",
+    "AWS::CloudFront::Distribution",
+    "AWS::CloudFront::OriginAccessControl",
     "AWS::IAM::Policy",
     "AWS::IAM::Role",
     "AWS::Lambda::Function",
@@ -42,6 +44,8 @@ it("synthesizes only the public MCP and demo HTTP boundary", () => {
     "AWS::Lambda::Permission",
     "AWS::Logs::LogGroup",
     "AWS::Logs::LogGroup",
+    "AWS::S3::Bucket",
+    "AWS::S3::BucketPolicy",
   ]);
 });
 
@@ -49,6 +53,7 @@ const routeKeys = ["GET /health", "POST /api/demo/chat", "POST /mcp"];
 
 it("routes only health, MCP POST, and demo chat to the existing Lambda", () => {
   const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
+  const distribution = Object.keys(template.findResources("AWS::CloudFront::Distribution"))[0];
   const integration = Object.keys(template.findResources("AWS::ApiGatewayV2::Integration"))[0];
   const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
   template.resourceCountIs("AWS::ApiGatewayV2::Api", 1);
@@ -57,9 +62,14 @@ it("routes only health, MCP POST, and demo chat to the existing Lambda", () => {
   template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
     ProtocolType: "HTTP",
     CorsConfiguration: {
-      AllowOrigins: ["http://127.0.0.1:5173", "http://localhost:5173"],
+      AllowOrigins: [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        { "Fn::Join": ["", ["https://", { "Fn::GetAtt": [distribution, "DomainName"] }]] },
+      ],
       AllowMethods: ["GET", "POST"],
       AllowHeaders: ["content-type"],
+      AllowCredentials: Match.absent(),
     },
     // No quick-create/default route or external OpenAPI routes.
     Target: Match.absent(),
@@ -92,6 +102,95 @@ it("routes only health, MCP POST, and demo chat to the existing Lambda", () => {
     }),
   );
   // Exact route keys forbid OAuth, repository routes, GET /mcp, ANY and $default catch-alls.
+  expect(JSON.stringify(template.findResources("AWS::CloudFront::Distribution"))).not.toContain(
+    api,
+  );
+});
+
+it("serves static assets through one private S3 origin with signed CloudFront access", () => {
+  const bucket = Object.keys(template.findResources("AWS::S3::Bucket"))[0];
+  const distribution = Object.keys(template.findResources("AWS::CloudFront::Distribution"))[0];
+  const oac = Object.keys(template.findResources("AWS::CloudFront::OriginAccessControl"))[0];
+  template.resourceCountIs("AWS::S3::Bucket", 1);
+  template.resourceCountIs("AWS::CloudFront::Distribution", 1);
+  template.resourceCountIs("AWS::CloudFront::OriginAccessControl", 1);
+  template.hasResourceProperties("AWS::S3::Bucket", {
+    PublicAccessBlockConfiguration: {
+      BlockPublicAcls: true,
+      BlockPublicPolicy: true,
+      IgnorePublicAcls: true,
+      RestrictPublicBuckets: true,
+    },
+    OwnershipControls: { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" }] },
+    BucketEncryption: {
+      ServerSideEncryptionConfiguration: [
+        { ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } },
+      ],
+    },
+    WebsiteConfiguration: Match.absent(),
+    VersioningConfiguration: Match.absent(),
+  });
+  expect(Object.values(template.findResources("AWS::S3::Bucket"))[0]!.DeletionPolicy).toBe(
+    "Delete",
+  );
+  template.hasResourceProperties("AWS::CloudFront::OriginAccessControl", {
+    OriginAccessControlConfig: {
+      OriginAccessControlOriginType: "s3",
+      SigningBehavior: "always",
+      SigningProtocol: "sigv4",
+    },
+  });
+  template.hasResourceProperties("AWS::CloudFront::Distribution", {
+    DistributionConfig: {
+      DefaultRootObject: "index.html",
+      DefaultCacheBehavior: {
+        AllowedMethods: ["GET", "HEAD"],
+        ViewerProtocolPolicy: "redirect-to-https",
+        Compress: true,
+      },
+      Origins: [
+        {
+          DomainName: { "Fn::GetAtt": [bucket, "RegionalDomainName"] },
+          OriginAccessControlId: { "Fn::GetAtt": [oac, "Id"] },
+          S3OriginConfig: { OriginAccessIdentity: "" },
+        },
+      ],
+      Aliases: Match.absent(),
+      CustomErrorResponses: Match.absent(),
+    },
+  });
+  template.hasResourceProperties("AWS::S3::BucketPolicy", {
+    Bucket: { Ref: bucket },
+    PolicyDocument: {
+      Statement: [
+        {
+          Action: "s3:GetObject",
+          Effect: "Allow",
+          Principal: { Service: "cloudfront.amazonaws.com" },
+          Condition: {
+            StringEquals: {
+              "AWS:SourceArn": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    { Ref: "AWS::Partition" },
+                    ":cloudfront::",
+                    { Ref: "AWS::AccountId" },
+                    ":distribution/",
+                    { Ref: distribution },
+                  ],
+                ],
+              },
+            },
+          },
+          Resource: {
+            "Fn::Join": ["", [{ "Fn::GetAtt": [bucket, "Arn"] }, "/*"]],
+          },
+        },
+      ],
+    },
+  });
 });
 
 it("limits invocation grants to this API's three explicit paths", () => {
@@ -270,6 +369,9 @@ it("outputs identifiers only and packages only the bundled handler", () => {
     "FunctionArn",
     "FunctionName",
     "RuntimeLogGroupName",
+    "WebBucketName",
+    "WebDistributionId",
+    "WebUrl",
   ]);
   const runtime = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
   const api = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
@@ -278,6 +380,13 @@ it("outputs identifiers only and packages only the bundled handler", () => {
     LoggingConfig: { LogGroup: template.toJSON().Outputs.RuntimeLogGroupName.Value },
   });
   template.hasOutput("FunctionArn", { Value: { "Fn::GetAtt": [runtime, "Arn"] } });
+  const bucket = Object.keys(template.findResources("AWS::S3::Bucket"))[0];
+  const distribution = Object.keys(template.findResources("AWS::CloudFront::Distribution"))[0];
+  template.hasOutput("WebBucketName", { Value: { Ref: bucket } });
+  template.hasOutput("WebDistributionId", { Value: { Ref: distribution } });
+  template.hasOutput("WebUrl", {
+    Value: { "Fn::Join": ["", ["https://", { "Fn::GetAtt": [distribution, "DomainName"] }]] },
+  });
   const assets = readdirSync(outdir, { withFileTypes: true }).filter(
     (entry) => entry.isDirectory() && entry.name.startsWith("asset."),
   );
