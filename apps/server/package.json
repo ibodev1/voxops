@@ -4,7 +4,6 @@
   "type": "module",
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "5.0.88",
-    "@ai-sdk/provider-utils": "5.0.45",
     "@aws-sdk/credential-providers": "3.1136.0",
     "@hono/node-server": "2.1.1",
     "@modelcontextprotocol/client": "2.0.0",

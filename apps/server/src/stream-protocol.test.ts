@@ -5,7 +5,7 @@ import {
   type ToolSet,
 } from "ai";
 import { expect, it } from "vitest";
-import { thinkingFilter } from "./demo-agent.js";
+import { thinkingFilter } from "./thinking-filter.js";
 
 it("uses AI SDK SSE with incremental text and tool events but no reasoning", async () => {
   const parts: TextStreamPart<ToolSet>[] = [

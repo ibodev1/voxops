@@ -41,9 +41,6 @@ importers:
       '@ai-sdk/amazon-bedrock':
         specifier: 5.0.88
         version: 5.0.88(zod@4.6.5)
-      '@ai-sdk/provider-utils':
-        specifier: 5.0.45
-        version: 5.0.45(zod@4.6.5)
       '@aws-sdk/credential-providers':
         specifier: 3.1136.0
         version: 3.1136.0
