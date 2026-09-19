@@ -89,6 +89,10 @@ it("exposes exactly four discovered read tools and executes through the MCP clie
   expect(sdk.toUIMessageStream.mock.calls[0]![0].onError(new Error("secret"))).toBe(
     "The live answer is unavailable right now.",
   );
+  expect(options.system).toContain("Lead with the most important result");
+  expect(options.system).toContain("most relevant 1-3 items");
+  expect(options.system).toContain("Do not reproduce every tool field");
+  expect(options.maxOutputTokens).toBe(350);
 });
 
 it("rejects missing MCP capabilities before streaming", async () => {
@@ -118,30 +122,51 @@ async function filtered(
   return output;
 }
 
-it("streams visible text while removing split and nested literal thinking blocks", async () => {
-  const chunks = [
-    "The repo ",
-    "<thi",
-    "nking>private <thinking>nested</thinking> trace</thi",
-    "nking>is active.",
-  ];
+async function visibleText(chunks: string[]): Promise<string> {
   const parts = chunks.map((text) => ({ type: "text-delta" as const, id: "answer", text }));
   const output = await filtered(parts);
-  expect(
-    output
-      .filter((part) => part.type === "text-delta")
-      .map((part) => part.text)
-      .join(""),
-  ).toBe("The repo is active.");
-  expect(output.length).toBeGreaterThan(1);
+  return output
+    .filter((part) => part.type === "text-delta")
+    .map((part) => part.text)
+    .join("");
+}
+
+it("removes a complete literal thinking block", async () => {
+  expect(await visibleText(["The repo <thinking>private trace</thinking>is active."])).toBe(
+    "The repo is active.",
+  );
 });
 
-it("does not touch reasoning parts and fails closed for an unclosed thinking block", async () => {
+it("removes nested thinking blocks with delimiters split across chunks", async () => {
+  expect(
+    await visibleText([
+      "The repo ",
+      "<thi",
+      "nking>private <thinking>nested</thinking> trace</thi",
+      "nking>is active.",
+    ]),
+  ).toBe("The repo is active.");
+});
+
+it.each([
+  ["an opening tag", ["Visible ", "<thinking>"]],
+  ["thinking content", ["Visible <thinking>private trace"]],
+  ["a partial closing tag", ["Visible <thinking>private trace</think"]],
+  ["a partial opening tag", ["Visible <think"]],
+])("closes cleanly when the stream ends during %s", async (_label, chunks) => {
+  expect(await visibleText(chunks)).toBe("Visible ");
+});
+
+it("does not alter normal model text", async () => {
+  expect(await visibleText(["The repo ", "is active."])).toBe("The repo is active.");
+});
+
+it("does not touch reasoning parts and discards unclosed thinking content", async () => {
   const reasoning = { type: "reasoning-delta" as const, id: "reason", text: "private" };
   expect(await filtered([reasoning])).toEqual([reasoning]);
-  await expect(
-    filtered([{ type: "text-delta", id: "answer", text: "Visible <thinking>private" }]),
-  ).rejects.toThrow("Incomplete model thinking block");
+  expect(
+    await filtered([{ type: "text-delta", id: "answer", text: "Visible <thinking>private" }]),
+  ).toEqual([{ type: "text-delta", id: "answer", text: "Visible " }]);
 });
 
 it("withholds model text until a real tool result has arrived", async () => {
@@ -161,5 +186,5 @@ it("withholds model text until a real tool result has arrived", async () => {
   expect(result.filter((part) => part.type === "text-delta").map((part) => part.text)).toEqual([
     "Verified answer",
   ]);
-  await expect(filtered([parts[0]!], true)).rejects.toThrow("Ungrounded model response");
+  expect(await filtered([parts[0]!], true)).toEqual([]);
 });
