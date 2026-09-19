@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type Activity = {
   name: string;
@@ -96,6 +98,42 @@ export function turnsFromMessages(messages: UIMessage[]): Turn[] {
         .join(""),
       ...(message.role === "assistant" ? { activity: activityFromParts(message.parts) } : {}),
     }));
+}
+
+const markdownComponents: Components = {
+  a({ children, href, title }) {
+    const external = !!href && /^(https?:)?\/\//i.test(href);
+    return (
+      <a
+        href={href}
+        title={title}
+        {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+      >
+        {children}
+      </a>
+    );
+  },
+  table({ children }) {
+    return (
+      <div className="markdown-table-scroll">
+        <table>{children}</table>
+      </div>
+    );
+  },
+};
+
+export function AssistantMarkdown({ content }: { content: string }) {
+  return (
+    <div className="markdown-content">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents} skipHtml>
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+export function MessageBody({ role, content }: Pick<Turn, "role" | "content">) {
+  return role === "assistant" ? <AssistantMarkdown content={content} /> : <p>{content}</p>;
 }
 
 function contextFromActivity(previous: RepositoryContext, activity: Activity[]): RepositoryContext {
@@ -308,7 +346,7 @@ export function App() {
             {turns.map((turn, index) => (
               <article className={`message message-${turn.role}`} key={index}>
                 <span className="speaker">{turn.role === "user" ? "YOU" : "VOXOPS"}</span>
-                <p>{turn.content}</p>
+                <MessageBody role={turn.role} content={turn.content} />
                 {turn.activity && <ToolActivity items={turn.activity} />}
               </article>
             ))}

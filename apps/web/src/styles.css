@@ -183,7 +183,7 @@ summary:focus-visible {
   margin-top: 1.5rem;
   padding-top: 1.25rem;
 }
-.message p {
+.message > p {
   white-space: pre-wrap;
   line-height: 1.7;
   margin: 0;
@@ -195,8 +195,102 @@ summary:focus-visible {
 .message-user p {
   color: var(--color-muted);
 }
-.message-assistant p {
+.message-assistant .markdown-content {
   color: var(--color-ink);
+}
+.markdown-content {
+  min-width: 0;
+  font-size: 1rem;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.markdown-content > :first-child {
+  margin-top: 0;
+}
+.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+.markdown-content p,
+.markdown-content ul,
+.markdown-content ol,
+.markdown-content blockquote,
+.markdown-content pre,
+.markdown-table-scroll {
+  margin: 0.75rem 0;
+}
+.markdown-content strong {
+  font-weight: 700;
+}
+.markdown-content em {
+  font-style: italic;
+}
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 1.4rem;
+}
+.markdown-content li + li {
+  margin-top: 0.25rem;
+}
+.markdown-content code {
+  border: var(--rule-subtle);
+  border-radius: 0.3rem;
+  background: var(--color-panel-soft);
+  padding: 0.08rem 0.3rem;
+  font: 0.88em/1.55 var(--font-mono);
+}
+.markdown-content pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border: var(--rule-subtle);
+  border-radius: 0.5rem;
+  background: var(--color-panel-soft);
+  padding: 0.85rem 1rem;
+}
+.markdown-content pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 0.78rem;
+  white-space: pre;
+}
+.markdown-content blockquote {
+  border-left: 2px solid var(--color-accent);
+  color: var(--color-muted);
+  padding-left: 0.9rem;
+}
+.markdown-content a {
+  color: var(--color-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2rem;
+  overflow-wrap: anywhere;
+}
+.markdown-content a:hover {
+  color: var(--color-ink);
+}
+.markdown-content a:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+.markdown-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.markdown-content table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.markdown-content th,
+.markdown-content td {
+  border: var(--rule-subtle);
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-content th {
+  background: var(--color-panel-soft);
+  font-weight: 700;
 }
 .tool-activity {
   display: grid;
