@@ -8,8 +8,8 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
-    "@ai-sdk/react": "4.0.107",
-    "ai": "7.0.104",
+    "@ai-sdk/react": "4.0.110",
+    "ai": "7.0.107",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-markdown": "10.1.0",
