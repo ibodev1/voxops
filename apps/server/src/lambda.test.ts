@@ -68,6 +68,28 @@ it("allows unauthenticated remote MCP discovery through the real Lambda v2 adapt
   expect(fetch).not.toHaveBeenCalled();
 });
 
+it("returns the MCP transport 405 for GET and rejects a foreign Origin", async () => {
+  const { handler } = await import("./lambda.js");
+  const event: HttpV2Event = {
+    ...health,
+    rawPath: "/mcp",
+    routeKey: "GET /mcp",
+    headers: { host: "voxops.example", accept: "text/event-stream" },
+    requestContext: {
+      ...health.requestContext,
+      domainName: "voxops.example",
+      routeKey: "GET /mcp",
+      http: { ...health.requestContext.http, method: "GET", path: "/mcp" },
+    },
+  };
+  expect((await handler(event)).statusCode).toBe(405);
+  expect(
+    (await handler({ ...event, headers: { ...event.headers, origin: "https://evil.example" } }))
+      .statusCode,
+  ).toBe(403);
+  expect(fetch).not.toHaveBeenCalled();
+});
+
 it.each([
   "/api/demo/chat",
   "/oauth/token",

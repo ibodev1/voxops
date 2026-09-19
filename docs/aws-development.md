@@ -1,6 +1,6 @@
 # AWS development and manual deployment
 
-VoxOps uses `VoxOpsDevStack` in `eu-central-1`. The existing HTTP API and Lambda keep `GET /health` and `POST /mcp`. One regional REST API and a separate Node.js 24 ARM64 Lambda stream `POST /api/demo/chat` through CloudFront. Each Lambda is 256 MB with a 60-second timeout; three log groups retain seven days. The web assets remain in a private S3 bucket behind the same CloudFront distribution. There is no application Secrets Manager dependency. CDK bootstrap storage is separate.
+VoxOps uses `VoxOpsDevStack` in `eu-central-1`. The deployed HTTP API and Runtime Lambda serve `GET /health` and `POST /mcp`; the final source revision adds `GET /mcp` to return the 2025-11-25 specification's required 405 when no standalone SSE stream is offered. **Manually deploy this route before judging.** One regional REST API and a separate Node.js 24 ARM64 Lambda stream `POST /api/demo/chat` through CloudFront. Each Lambda is 256 MB with a 60-second timeout; three log groups retain seven days. The web assets remain in a private S3 bucket behind the same CloudFront distribution. There is no application Secrets Manager dependency. CDK bootstrap storage is separate.
 
 ## Identity and review
 
@@ -34,7 +34,7 @@ aws sts get-caller-identity
 aws bedrock get-inference-profile --inference-profile-identifier eu.amazon.nova-micro-v1:0 --region $env:AWS_REGION
 ```
 
-Stop if the identity ARN ends in `:root`. Confirm the profile is `ACTIVE`, includes the expected Nova Micro model, and is callable under your account's Bedrock and organization policies. Only the chat Lambda role receives `bedrock:InvokeModelWithResponseStream` on the profile ARN and its four EU foundation-model ARNs; destination access is conditioned on the profile ARN. If access is denied, resolve it with the account administrator before deployment; do not broaden the policy to `bedrock:*`. Local live model access could not be verified during implementation because the available AWS profiles did not return a usable identity. Synth and automated tests require no AWS account.
+Stop if the identity ARN ends in `:root`. Confirm the profile is `ACTIVE`, includes the expected Nova Micro model, and is callable under your account's Bedrock and organization policies. Only the chat Lambda role receives `bedrock:InvokeModelWithResponseStream` on the profile ARN and its four EU foundation-model ARNs; destination access is conditioned on the profile ARN. If access is denied, resolve it with the account administrator before deployment; do not broaden the policy to `bedrock:*`. The deployed Nova Micro chat was verified live on 2026-09-18. Synth and automated tests require no AWS account.
 
 The browser calls same-origin `/api/demo/chat` through a single uncached CloudFront behavior. The REST API has no wildcard CORS. The existing HTTP API retains its two local development CORS origins for health/MCP. No browser build-time API URL or AWS credentials are needed. The REST chat stage has only `POST /api/demo/chat` and throttles at 2 requests/second with burst 2. The existing HTTP API stage retains 10 requests/second with burst 20. Chat Lambda has no reserved or provisioned concurrency. API Gateway throttling is best-effort cost/load protection, not authentication or a hard billing cap.
 
@@ -82,24 +82,9 @@ curl.exe -i $webUrl
 
 `--delete` removes obsolete hashed files immediately; a visitor holding the previous page open during a release can briefly request a removed asset. For a hackathon demo, schedule the upload between sessions. CloudFront and S3 usage depend on traffic and storage; monitor them rather than assuming a fixed price.
 
-## Hackathon AWS cleanup (manual, after the demo)
+## Hackathon AWS cleanup
 
-The web bucket uses `RemovalPolicy.DESTROY` without `autoDeleteObjects`, so CloudFormation cannot remove it while it contains files. This avoids a custom-resource Lambda. When the project is truly finished, verify the non-root identity and account, capture `WebBucketName` from the output above, then empty the bucket **before** destroying the stack. These commands permanently remove the web assets and stack resources; do not run them for a routine update:
-
-```powershell
-$env:AWS_REGION = 'eu-central-1'
-aws sts get-caller-identity
-if ($LASTEXITCODE -ne 0) { throw 'AWS identity unavailable' }
-$awsArn = aws sts get-caller-identity --query Arn --output text
-if ($LASTEXITCODE -ne 0 -or $awsArn -match ':root$') { throw 'Use a non-root identity' }
-$bucket = aws cloudformation describe-stacks --stack-name VoxOpsDevStack --region $env:AWS_REGION --query "Stacks[0].Outputs[?OutputKey=='WebBucketName'].OutputValue | [0]" --output text
-if ($LASTEXITCODE -ne 0 -or !$bucket -or $bucket -eq 'None') { throw 'WebBucketName unavailable' }
-aws s3 rm "s3://$bucket" --recursive --region $env:AWS_REGION
-if ($LASTEXITCODE -ne 0) { throw 'Web bucket cleanup failed' }
-pnpm --filter @voxops/infra exec cdk destroy
-```
-
-Confirm the stack is deleted and review CloudFront distribution, web bucket, API Gateway, Lambda, runtime and API CloudWatch log groups, and any other VoxOps-specific AWS resources for leftovers. CloudFront deletion may take time. Review Bedrock usage and model configuration or access enabled for this demo, plus the open quota support case. The stack does not provision a Bedrock resource. Review historical manually created secrets described below. CDK bootstrap resources are separate and may be shared with other projects; remove them only after checking for other users and stacks. No cleanup has been run by Codex.
+After judging and the winner announcement, follow the separate [cleanup runbook](cleanup.md). It archives stack outputs, empties the private web bucket, destroys the stack, and verifies service-level leftovers. Do not perform cleanup during an ordinary update.
 
 ## Remote smoke checks
 
@@ -120,11 +105,11 @@ Health must return HTTP 200 and exactly `{ "status": "ok" }`. MCP smoke must ini
 curl.exe -i "$voxopsApiEndpoint/api/repositories/ibodev1/voxops/status"
 curl.exe -i "$voxopsApiEndpoint/oauth/token"
 curl.exe -i "$voxopsApiEndpoint/.well-known/oauth-protected-resource"
-curl.exe -i "$voxopsApiEndpoint/mcp"
+curl.exe -i -H 'Accept: text/event-stream' "$voxopsApiEndpoint/mcp"
 curl.exe -i -X POST "$voxopsApiEndpoint/api/demo/chat" -H 'content-type: application/json' --data-raw '{"messages":[{"role":"user","content":"status"}]}'
 ```
 
-Each negative request must return HTTP 404. `GET /mcp` is deliberately absent; only POST is remotely routed. The buffered chat route is also absent from the HTTP API. A nonallowlisted repository must return an MCP tool error saying it is not on the public allowlist. Do not place tokens or private repository names in demo commands.
+The repository, OAuth, and old buffered chat paths must return HTTP 404. `GET /mcp` must return HTTP 405; `POST /mcp` performs MCP requests. A nonallowlisted repository must return an MCP tool error saying it is not on the public allowlist. Do not place tokens or private repository names in demo commands.
 
 After deploying the backend and confirming Bedrock access, test the REST streaming endpoint with `curl.exe --no-buffer`. The output is AI SDK UI-message SSE, so expect several `data:` lines, including tool input/output events and successive text deltas. Watch them arrive at different times; a single final batch is not proof of streaming.
 
@@ -140,14 +125,4 @@ Expect HTTP 200, multiple timestamped SSE lines as Bedrock chunks arrive, `get_r
 
 HTTP API access logs record request ID, method, route key, status, and latency; they omit headers, bodies, and MCP payloads. The REST API relies on its Lambda's seven-day runtime log and API Gateway metrics. [AWS requires an account-level logging role](https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-logging.html) for REST CloudWatch access logs; this isolated stack does not change account-level logging settings. The REST chat stage's 2 requests/second, burst-2 throttle is best effort, not a hard billing cap. Anonymous GitHub rate limits and public API traffic are intentional hackathon cost and availability tradeoffs. Find actual log groups through `RuntimeLogGroupName`, `ChatRuntimeLogGroupName`, and `ApiAccessLogGroupName` stack outputs rather than assuming a conventional Lambda log-group name.
 
-## Old secrets: manual cleanup only after successful new deployment and MCP tests
-
-The two legacy secrets were created outside CDK. They remain in AWS until the developer explicitly removes them. **Run these commands only after the new public Lambda is deployed and all remote MCP tests pass. Codex has not run them.** First verify identity again, including the non-root ARN check, then use the standard recovery window:
-
-```powershell
-aws sts get-caller-identity
-aws secretsmanager delete-secret --secret-id voxops/dev/github-app --recovery-window-in-days 7 --region eu-central-1
-aws secretsmanager delete-secret --secret-id voxops/dev/alexa-service-auth --recovery-window-in-days 7 --region eu-central-1
-```
-
-The old architecture and investigation remain in [the historical ADRs](decisions/) and [Tier 2 compatibility report](alexa-tier2-compatibility.md).
+The old private/authentication architecture remains in [historical ADRs](decisions/) and the [Tier 2 compatibility report](alexa-tier2-compatibility.md). Historical secrets created outside CDK must be reviewed separately during cleanup; the current application has no Secrets Manager dependency.

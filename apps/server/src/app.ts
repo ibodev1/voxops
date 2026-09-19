@@ -16,6 +16,12 @@ export function createApp(github: GitHubRepositoryClient, runtime: "local" | "la
   }
   const app = new Hono();
   app.get("/health", (context) => context.json({ status: "ok" }));
-  app.post("/mcp", (context) => mcp.fetch(context.req.raw));
+  const remoteMcp = async (context: Context): Promise<Response> => {
+    const origin = context.req.header("origin");
+    if (origin && origin !== new URL(context.req.url).origin) return context.body(null, 403);
+    return mcp.fetch(context.req.raw);
+  };
+  app.get("/mcp", remoteMcp);
+  app.post("/mcp", remoteMcp);
   return app;
 }

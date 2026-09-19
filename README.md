@@ -1,57 +1,63 @@
 # VoxOps
 
-VoxOps is a voice-first Alexa+ developer assistant that reads **public GitHub repository state** through MCP Streamable HTTP. It offers a real self-hosted MCP server and an optional web-based **simulated Alexa+ experience** for conversational demos. The simulation is not the official Alexa Web Simulator. The [Alexa+ hackathon rules](https://amazonappdev2026.devpost.com/rules) allow a simulated Alexa+ experience; Alexa developer-tool onboarding for the live Add-on flow remains pending. The MCP server has four read-only tools:
+VoxOps is a developer assistant for Alexa+ that reads the state of an allowlisted public GitHub repository through a live, self-hosted MCP server.
 
-- `get_repository_status`: branch, latest commit, and repository state
-- `list_open_issues`: open issues, excluding pull requests
-- `list_pull_requests`: open pull requests
-- `list_workflow_runs`: recent GitHub Actions runs
+## Live demo
 
-The server accepts only explicitly allowlisted `owner/repo` names and checks that GitHub reports each repository as public before every tool read. GitHub API calls are anonymous. There are no GitHub credentials, account linking, personalized data, or write operations. Anonymous GitHub API rate limits are an intentional demo tradeoff.
+**[Try the simulated Alexa+ experience](https://d190htydn0gfle.cloudfront.net/)** — ask what is happening with VoxOps, inspect the streamed answer and MCP tool activity, and compare the result with the [public repository](https://github.com/ibodev1/voxops). No login or AWS credentials are needed. This web experience simulates Alexa+; it is not an official Alexa Add-on or Web Simulator.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  User --> Web[VoxOps web experience]
+  Web --> CF[CloudFront]
+  CF --> S3[Private S3 assets]
+  CF --> REST[REST chat API<br/>STREAM]
+  REST --> Chat[Chat Lambda]
+  Chat --> Bedrock[Bedrock<br/>Nova Micro]
+  Chat --> Client[MCP client]
+  Client --> HTTP[HTTP API]
+  HTTP --> Runtime[Runtime Lambda<br/>self-hosted MCP]
+  Runtime --> GitHub[Public GitHub API]
+```
+
+The separate REST API and Chat Lambda stream model responses. The HTTP API serves `GET /health` and `POST /mcp` and has no chat route. The final source revision adds `GET /mcp` to return the spec-required 405 when standalone SSE is unavailable; that route needs manual deployment before judging. AWS currently supports API Gateway response streaming only for REST APIs, so the two APIs have distinct jobs.
+
+## What it does
+
+The web experience accepts natural-language questions, streams an Amazon Nova Micro answer, shows each MCP tool call separately, and fills a live repository-context panel. The agent gets repository facts only through VoxOps MCP; that server calls GitHub anonymously. VoxOps currently accepts only `ibodev1/voxops`, checks that GitHub reports it as public, and offers exactly four read-only tools:
+
+| MCP tool                | Reads                                   |
+| ----------------------- | --------------------------------------- |
+| `get_repository_status` | Metadata, default branch, latest commit |
+| `list_open_issues`      | Open issues, excluding pull requests    |
+| `list_pull_requests`    | Open pull requests                      |
+| `list_workflow_runs`    | Recent GitHub Actions runs              |
+
+The live MCP server uses Streamable HTTP. Its current SDK negotiates `2026-07-28` with an up-to-date client and accepts a `2025-11-25` initialize request, meeting the [Alexa+ hackathon MCP minimum](https://amazonappdev2026.devpost.com/rules). The Alexa Add-on itself has not been onboarded or tested.
+
+## Technology
+
+TypeScript, pnpm, React, Vite, Hono, the official MCP TypeScript SDK, Octokit, Zod, Vercel AI SDK, Amazon Bedrock (EU Nova Micro inference profile), AWS Lambda, API Gateway HTTP and REST APIs, CloudFront, private S3, and AWS CDK.
 
 ## Run locally
 
-Use Node.js 24 and pnpm 11.23.0. Set the allowlist (comma-separated names are supported) and start the loopback server:
+Use Node.js 24 and pnpm 11.23.0. In one PowerShell terminal:
 
 ```powershell
 pnpm install --frozen-lockfile
 $env:VOXOPS_PUBLIC_REPOSITORIES = 'ibodev1/voxops'
-pnpm dev:server
-```
-
-In another terminal:
-
-```powershell
-curl.exe http://127.0.0.1:3000/health
-pnpm mcp:smoke
-```
-
-The smoke script initializes MCP, lists exactly four tools, invokes each against the configured public repository, and verifies that a nonallowlisted name is rejected. Set `VOXOPS_MCP_URL` to a full `/mcp` URL to test a deployed endpoint.
-
-### Run the simulated experience
-
-The web app streams a server-side AI SDK answer from Bedrock Nova Micro. AI SDK tools use the official MCP client to call the same VoxOps `/mcp` endpoint; they do not call GitHub directly. For local development, use AWS temporary credentials with Bedrock access and run the server and web app in separate terminals:
-
-```powershell
-$env:AWS_PROFILE = '<your-temporary-credential-profile>'
+$env:AWS_PROFILE = '<temporary-non-root-profile>'
 $env:AWS_REGION = 'eu-central-1'
-$env:VOXOPS_PUBLIC_REPOSITORIES = 'ibodev1/voxops'
 pnpm dev:server
 ```
 
-```powershell
-pnpm --filter @voxops/web dev
-```
+In another terminal, run `pnpm --filter @voxops/web dev` and open `http://127.0.0.1:5173`. Vite proxies `/api` to the loopback server. Chat needs temporary AWS credentials with Bedrock access; MCP and health do not. To test MCP without Bedrock, use `pnpm mcp:smoke` while the server is running. To test the live server, set `VOXOPS_MCP_URL` to the [public MCP endpoint](https://sb8ffkmwta.execute-api.eu-central-1.amazonaws.com/mcp) before running the same smoke command. The [technical walkthrough](docs/technical-walkthrough.md) explains the code and the [environment table](docs/environment.md) lists every setting.
 
-Open `http://127.0.0.1:5173`. Vite proxies local `/api` requests to the server on port 3000; its local-only streaming chat adapter uses the loopback `/mcp` endpoint by default. To use a deployed MCP server instead, set `VOXOPS_MCP_REMOTE_URL` to the full public `/mcp` URL before starting the server. In production, the browser sends same-origin `/api/demo/chat` through CloudFront. No AWS credentials belong in Vite variables. The Bedrock profile and manual deployment prerequisites are in [AWS development](docs/aws-development.md).
+## AWS deployment and tests
 
-## AWS boundary
-
-CDK keeps the HTTP API and its Lambda for only `GET /health` and `POST /mcp`. A separate regional REST API streams `POST /api/demo/chat` from a 256 MB ARM64 Lambda. CloudFront forwards that one path without caching; its default behavior still serves private S3 assets. Both APIs have best-effort throttling. No REST repository routes, catch-all, Cognito, Secrets Manager access, database, VPC, or always-on compute are configured. [AWS development and manual deployment](docs/aws-development.md) has the commands and smoke checks.
-
-Account linking and service authentication are intentionally disabled for this public, user-independent demo. [The Alexa CLI access blocker](docs/alexa-cli-access-blocker.md) and [Alexa M6 checklist](docs/alexa-m6-checklist.md) record the remaining live Add-on work. Private repository GitHub App access, account linking, and safe write actions are possible future work, outside this demo.
-
-## Verify changes
+CDK defines two 256 MB ARM64 Lambdas, two API Gateways, CloudFront, one private S3 bucket, and seven-day log groups. It does not upload web assets. Review [AWS development](docs/aws-development.md) for non-root deployment, upload, and smoke commands; use the [cleanup runbook](docs/cleanup.md) after judging. CI requires no AWS account and never deploys.
 
 ```powershell
 pnpm format:check
@@ -61,3 +67,11 @@ pnpm test
 pnpm infra:synth
 pnpm --filter @voxops/web build
 ```
+
+## Hackathon scope
+
+VoxOps is public-data only, read-only, and limited to one allowlisted demo repository. It has no private GitHub access, write actions, account linking, OAuth, Alexa Add-on deployment, database, or persistent user state. API Gateway throttling limits ordinary load but is not a hard billing cap. Anonymous GitHub rate limits and public access are deliberate demo limits. See the [judge instructions](submission/testing-instructions.md) and [final architecture decision](docs/decisions/0010-final-hackathon-architecture.md).
+
+## AI-assisted development and license
+
+AI coding tools including Codex assisted development. The developer made the architecture and security decisions, reviewed the code, and manually verified the deployed demo end to end. VoxOps is licensed under the [MIT License](LICENSE). Before submitting, verify GitHub displays the license in the repository About section.

@@ -17,14 +17,14 @@ afterAll(() => rmSync(outdir, { recursive: true, force: true }));
 
 const resource = (type: string) => Object.entries(template.findResources(type));
 
-it("keeps the existing HTTP API limited to health and MCP", () => {
+it("keeps the HTTP API limited to health and spec-compliant MCP methods", () => {
   template.resourceCountIs("AWS::ApiGatewayV2::Api", 1);
-  template.resourceCountIs("AWS::ApiGatewayV2::Route", 2);
+  template.resourceCountIs("AWS::ApiGatewayV2::Route", 3);
   expect(
     resource("AWS::ApiGatewayV2::Route")
       .map(([, value]) => value.Properties.RouteKey)
       .sort(),
-  ).toEqual(["GET /health", "POST /mcp"]);
+  ).toEqual(["GET /health", "GET /mcp", "POST /mcp"]);
   template.resourceCountIs("AWS::ApiGatewayV2::Integration", 1);
   template.hasResourceProperties("AWS::ApiGatewayV2::Integration", {
     IntegrationType: "AWS_PROXY",

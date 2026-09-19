@@ -199,3 +199,47 @@ Record actual friction as it occurs. Copy the template below for each entry; do 
 - **Severity:** Medium
 - **Workaround:** Remove ChatRuntime reserved concurrency and limit public-demo request pressure at the REST API stage to 2 requests/second with burst 2.
 - **Suggested improvement:** Check available account concurrency before adding a reservation; document API Gateway throttling as best effort rather than a hard billing cap.
+
+## 2026-09-18: Alexa AI CLI cross-account onboarding access
+
+- **Date:** 2026-09-18 (developer-reported)
+- **Component/tool:** Alexa AI CLI / Amazon CodeArtifact / STS
+- **Task:** Install the Alexa AI CLI for the Add-on path.
+- **Expected behavior:** The developer identity can assume the documented read role and download the CLI package.
+- **Actual behavior:** The cross-account role assumption was denied despite a local identity policy allowing `sts:AssumeRole`. The exact cause is unverified; a feedback/support request was submitted.
+- **Severity:** High
+- **Workaround:** Keep the working self-hosted MCP server and clearly labeled simulated Alexa+ web experience as the hackathon path. Do not use root as a workaround.
+- **Suggested improvement:** Publish the full onboarding and trust prerequisites and an actionable denial diagnostic for external developers.
+
+## 2026-09-18: Nova Micro quota initially blocked inference
+
+- **Date:** 2026-09-18 (developer-reported)
+- **Component/tool:** Amazon Bedrock service quota
+- **Task:** Invoke Nova Micro for the public demo.
+- **Expected behavior:** A new account can make a small on-demand test call.
+- **Actual behavior:** The initial Nova quota allocation was zero; the developer used the quota-increase workflow before live inference succeeded. The exact initial error text was not retained here.
+- **Severity:** Medium
+- **Workaround:** Request the required quota increase and verify an actual Nova call before recording the demo.
+- **Suggested improvement:** Show effective model/profile quotas and the increase path clearly during onboarding.
+
+## 2026-09-18: Chat response streaming required a REST API
+
+- **Date:** 2026-09-18
+- **Component/tool:** API Gateway HTTP and REST APIs / Lambda streaming
+- **Task:** Stream Bedrock answer deltas through the existing HTTP API.
+- **Expected behavior:** Reuse the current MCP HTTP API for the browser chat path.
+- **Actual behavior:** AWS documentation limits API Gateway response streaming to REST APIs. The HTTP API payload-v2 route could not provide the required incremental transfer.
+- **Severity:** Medium
+- **Workaround:** Keep MCP on the HTTP API and add one dedicated REST `STREAM` route and Chat Lambda for chat.
+- **Suggested improvement:** Make the streaming capability difference explicit in the API Gateway product comparison and CDK examples.
+
+## 2026-09-18: MCP GET transport response missed the specification
+
+- **Date:** 2026-09-18
+- **Component/tool:** API Gateway route boundary / MCP Streamable HTTP
+- **Task:** Audit the live MCP endpoint against the 2025-11-25 transport specification.
+- **Expected behavior:** `GET /mcp` returns SSE or HTTP 405 when standalone SSE is unavailable.
+- **Actual behavior:** The deployed API routed only POST, so live GET returned 404 even though initialize and all four tools passed. The local SDK handler returned the required 405 when reached.
+- **Severity:** High for the primary MCP submission path
+- **Workaround:** Route GET to the same SDK handler, retain POST, and verify 405 plus Origin rejection in tests. Manual AWS deployment and a live recheck are pending.
+- **Suggested improvement:** Include a raw GET status check in Streamable HTTP compliance smoke tests, not only the client initialize/tool flow.

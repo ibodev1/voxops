@@ -161,7 +161,7 @@ export class VoxOpsDevStack extends Stack {
       methods: [HttpMethod.GET],
       integration,
     });
-    api.addRoutes({ path: "/mcp", methods: [HttpMethod.POST], integration });
+    api.addRoutes({ path: "/mcp", methods: [HttpMethod.GET, HttpMethod.POST], integration });
     api.addStage("DefaultStage", {
       stageName: "$default",
       autoDeploy: true,

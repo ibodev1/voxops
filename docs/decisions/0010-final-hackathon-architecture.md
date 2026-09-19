@@ -1,0 +1,11 @@
+# 0010: Final hackathon architecture
+
+**Status:** Accepted, 2026-09-18. This supersedes historical private GitHub and Alexa authentication plans; [ADR 0008](0008-public-read-only-demo.md) explains the public-scope decision.
+
+VoxOps submits a working self-hosted MCP server over Streamable HTTP for the Alexa+ track. Four tools read only `ibodev1/voxops` through anonymous GitHub API requests. Each call enforces the allowlist and checks that GitHub reports the repository as public. No account linking, OAuth, private repository fallback, or write tool is exposed. This keeps the public demo user-independent and avoids pretending that GitHub App installation access is user authorization.
+
+The optional simulated Alexa+ web experience uses AI SDK `streamText` with the EU Amazon Nova Micro inference profile on Bedrock. Its tools call the same live MCP endpoint through the official client. A dedicated Chat Lambda and regional REST API stream the AI SDK response; the existing Runtime Lambda and HTTP API serve health and MCP. `GET /mcp` returns the SDK's 405 response for clients seeking standalone SSE; `POST /mcp` handles calls. AWS currently limits API Gateway response streaming to REST APIs, so combining the two Lambdas would add migration risk and erase the clean MCP/runtime boundary. CloudFront serves Vite assets from a private S3 bucket through Origin Access Control and forwards only the chat path without caching.
+
+The deployment uses 256 MB ARM64 Lambdas, seven-day logs, no reserved or provisioned concurrency, and a best-effort REST chat throttle of 2 requests/second with burst 2. Bedrock IAM is limited to response-streaming invocation on the named inference profile and its conditioned EU model destinations. The developer monitors AWS costs externally; throttling is not a hard billing cap.
+
+Private repositories would require verified user identity, Alexa-compatible account linking, GitHub authorization tied to that user, and credential handling. Writes would additionally require narrow GitHub permissions, action-specific confirmation, and auditability. Neither belongs to this hackathon demo. Historical research remains in the earlier ADRs and Alexa notes; no post-hackathon feature milestone is planned here.

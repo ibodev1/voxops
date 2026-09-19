@@ -81,6 +81,7 @@ const workflowRuns = {
 };
 
 let client: Client;
+let transport: StreamableHTTPClientTransport;
 
 beforeEach(async () => {
   vi.resetAllMocks();
@@ -92,7 +93,7 @@ beforeEach(async () => {
     { name: "voxops-test", version: "0.1.0" },
     { versionNegotiation: { mode: "auto" } },
   );
-  const transport = new StreamableHTTPClientTransport(new URL("http://127.0.0.1/mcp"), {
+  transport = new StreamableHTTPClientTransport(new URL("http://127.0.0.1/mcp"), {
     fetch: async (url, init) => {
       const request = new Request(url, init);
       request.headers.set("host", "127.0.0.1");
@@ -106,6 +107,8 @@ afterEach(async () => client.close());
 
 describe("MCP Streamable HTTP endpoint", () => {
   it("connects and lists the four read-only repository tools", async () => {
+    expect(transport.protocolVersion).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(transport.protocolVersion! >= "2025-11-25").toBe(true);
     expect(client.getServerVersion()).toMatchObject({ name: "voxops", version: "0.1.0" });
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -193,6 +196,7 @@ describe("MCP Streamable HTTP endpoint", () => {
     });
     try {
       await legacy.connect(transport);
+      expect(transport.protocolVersion).toBe("2025-11-25");
       expect(legacy.getDiscoverResult()).toBeUndefined();
       expect((await legacy.listTools()).tools.map((tool) => tool.name)).toEqual([
         "get_repository_status",
@@ -305,6 +309,24 @@ it("runs all four tools through unauthenticated remote MCP", async () => {
     );
     const { tools } = await remoteClient.listTools();
     expect(tools).toHaveLength(4);
+    const noSse = await remote.request("/mcp", {
+      headers: { accept: "text/event-stream" },
+    });
+    expect(noSse.status).toBe(405);
+    const badOrigin = await remote.request("/mcp", {
+      headers: { accept: "text/event-stream", origin: "https://evil.example" },
+    });
+    expect(badOrigin.status).toBe(403);
+    const badPostOrigin = await remote.request("/mcp", {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        origin: "https://evil.example",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(badPostOrigin.status).toBe(403);
     for (const tool of tools) {
       const result = await remoteClient.callTool({
         name: tool.name,

@@ -1,6 +1,6 @@
 # 0005: Remote health boundary
 
-**Status:** SUPERSEDED by [ADR 0008](0008-public-read-only-demo.md). The remote boundary now also exposes POST /mcp.
+**Status:** SUPERSEDED by [ADR 0010](0010-final-hackathon-architecture.md). The final remote boundary exposes POST /mcp and a GET /mcp route returning 405, in addition to health.
 
 Add one API Gateway v2 HTTP API to the existing development stack. A single explicit `GET /health` route uses the existing Lambda through the standard payload v2 proxy integration. The `$default` stage is an automatically deployed stage, not a catch-all route. No default integration, proxy route, CORS, Function URL, or authentication system is configured. This is the smallest remote boundary needed to verify HTTP transport before choosing Alexa-compatible authorization.
 

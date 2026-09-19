@@ -11,9 +11,13 @@ const client = new Client(
   { name: "voxops-smoke", version: "0.1.0" },
   { versionNegotiation: { mode: "auto" } },
 );
+const transport = new StreamableHTTPClientTransport(new URL(url));
 
 try {
-  await client.connect(new StreamableHTTPClientTransport(new URL(url)));
+  await client.connect(transport);
+  if (!transport.protocolVersion || transport.protocolVersion < "2025-11-25") {
+    throw new Error("MCP protocol is older than the hackathon minimum");
+  }
   if (client.getServerVersion()?.name !== "voxops") throw new Error("Unexpected MCP server");
 
   const tools = (await client.listTools()).tools.map((tool) => tool.name);
@@ -85,7 +89,7 @@ try {
     throw new Error("Allowlist rejection failed");
   }
 
-  console.log(`MCP smoke passed for ${status.fullName} (public).`);
+  console.log(`MCP smoke passed for ${status.fullName} (public, ${transport.protocolVersion}).`);
   console.log(counts.join(", "));
 } catch {
   console.error(

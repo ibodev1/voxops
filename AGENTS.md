@@ -1,22 +1,22 @@
 # VoxOps project guidance
 
-VoxOps is a voice-first developer operations agent for Alexa+. It will cover GitHub repositories, issues, pull requests, workflows, and deployment state. Design reads first. Any write or destructive action needs explicit user confirmation.
+VoxOps is feature complete for its hackathon scope: a public, read-only developer assistant with one allowlisted GitHub repository, a self-hosted MCP server, and a Bedrock-backed simulated Alexa+ web experience. Do not add private GitHub access, write actions, account linking, or an Alexa Add-on as part of finalization. Any future write or destructive action needs explicit user confirmation.
 
-## Architecture direction
+## Architecture
 
-- Use a pnpm workspace and strict TypeScript. Add workspaces only when they have real code: `apps/web` (React + Vite), `apps/server` (Hono + MCP), `packages/contracts`, `packages/domain`, `packages/github`, and `infra` (AWS CDK in TypeScript).
-- Target AWS Lambda and API Gateway later; add DynamoDB only for a demonstrated storage need. Avoid always-on servers unless justified. Use Amazon Bedrock only for a concrete AI use case.
-- Integrate GitHub through a GitHub App with narrowly scoped permissions, not personal access tokens.
+- Keep the pnpm workspace with `apps/web`, `apps/server`, `packages/contracts`, `packages/github`, and `infra`. The final architecture is recorded in `docs/decisions/0010-final-hackathon-architecture.md`.
+- Runtime Lambda serves health and MCP through API Gateway HTTP API. A separate Chat Lambda serves AI SDK/Bedrock response streaming through REST API. CloudFront serves private S3 assets and forwards the chat path.
+- GitHub reads are anonymous, restricted to `ibodev1/voxops`, and verified public on every tool call. Never add production secrets, static AWS credentials, or a private-repository fallback.
 
 ## Engineering workflow
 
-- Work one milestone at a time. Inspect existing files and Git state before editing; keep diffs small and avoid speculative abstractions, generic utility layers, and unused files.
-- Use explicit types at public boundaries. Avoid `any`; validate untrusted input at runtime. Prefer Web Standard APIs and minimal dependencies. Comments should explain why, not restate what the code does.
-- Keep tests deterministic. Run `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, and `pnpm test` before completion. Report architecture decisions and explain each added dependency. Do not implement future milestones early.
-- Use the Karpathy coding guidelines for simple, verifiable changes. Apply Hallmark when UI work begins.
+- Inspect Git state and relevant code before editing. Prefer deleting dead code over adding abstractions; preserve the working live demo.
+- Use strict TypeScript, runtime validation at untrusted boundaries, and deterministic tests. Avoid `any`, speculative layers, and unnecessary dependencies.
+- Run `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm infra:synth`, and the web build before completion. CI requires no AWS credentials and does not deploy.
+- Apply the Karpathy coding guidelines for small, verifiable changes. Use Hallmark only for requested UI design work.
 
-## Security and quality
+## Security and operations
 
-- Follow least privilege for GitHub App permissions and AWS IAM. Prefer read actions; require explicit confirmation for writes.
-- Never commit production secrets or credentials. Later, store them in appropriate AWS or GitHub secret facilities.
-- Aim for a real working demo with explainable architecture, low AWS cost, observable behavior, and a clean public repository. Record actual development friction in `docs/friction-log.md`.
+- Keep GitHub operations read-only; do not expose credentials or raw provider errors. Bedrock IAM stays scoped to the Nova Micro inference profile and required model ARNs.
+- Use a non-root temporary AWS identity for manual AWS operations. Never deploy or tear down infrastructure without an explicit request. API throttling is best-effort protection, not a billing cap.
+- Preserve genuine development friction in `docs/friction-log.md`. Follow `docs/cleanup.md` after judging and the winner announcement.
